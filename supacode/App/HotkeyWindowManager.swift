@@ -194,6 +194,13 @@ final class HotkeyWindowManager {
 
   private func handleWindowResign() {
     guard !isTransitioningPresentation else { return }
+    if let window = observedWindow,
+      !HotkeyWindowDismissalPlanner.shouldDismissWhenWindowResigns(
+        hasAttachedSheet: window.attachedSheet != nil
+      )
+    {
+      return
+    }
     dismissPanel()
   }
 }

@@ -93,4 +93,17 @@ struct HotkeyWindowLayoutTests {
 
     #expect(restoreOrder == .restoreThenHide)
   }
+
+  @Test func dismissalPlannerKeepsHotkeyWindowVisibleWhileSheetIsAttached() {
+    #expect(
+      HotkeyWindowDismissalPlanner.shouldDismissWhenWindowResigns(
+        hasAttachedSheet: true
+      ) == false
+    )
+    #expect(
+      HotkeyWindowDismissalPlanner.shouldDismissWhenWindowResigns(
+        hasAttachedSheet: false
+      )
+    )
+  }
 }
