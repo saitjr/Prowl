@@ -383,7 +383,7 @@ struct AppFeature {
             settings: repositorySettings,
             userSettings: userRepositorySettings
           )
-        case .general, .notifications, .shortcuts, .worktree, .updates, .advanced, .github:
+        case .general, .notifications, .shortcuts, .hotkeyWindow, .worktree, .updates, .advanced, .github:
           state.settings.repositorySettings = nil
         }
         return .none

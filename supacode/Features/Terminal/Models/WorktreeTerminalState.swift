@@ -22,6 +22,7 @@ final class WorktreeTerminalState {
   @SharedReader private var repositorySettings: RepositorySettings
   private var trees: [TerminalTabID: SplitTree<GhosttySurfaceView>] = [:]
   private var surfaces: [UUID: GhosttySurfaceView] = [:]
+  private var workingDirectoryAccessSessions: [String: RepositorySecurityScopedAccess.Session] = [:]
   private var focusedSurfaceIdByTab: [TerminalTabID: UUID] = [:]
   var tabIsRunningById: [TerminalTabID: Bool] = [:]
   private var runScriptTabId: TerminalTabID?
@@ -341,8 +342,12 @@ final class WorktreeTerminalState {
         }
       }
     }
-    if let surfaceToFocus, surfaceToFocus.window?.firstResponder is GhosttySurfaceView {
-      surfaceToFocus.window?.makeFirstResponder(surfaceToFocus)
+    if let surfaceToFocus,
+      let window = surfaceToFocus.window,
+      window.firstResponder !== surfaceToFocus,
+      Self.shouldRestoreTerminalFirstResponder(window.firstResponder)
+    {
+      GhosttySurfaceView.moveFocus(to: surfaceToFocus)
     }
   }
 
@@ -357,6 +362,17 @@ final class WorktreeTerminalState {
     let isVisible = isSurfaceVisibleInTree && isSelectedTab && windowIsVisible
     let isFocused = isVisible && windowIsKey && focusedSurfaceID == surfaceID
     return SurfaceActivity(isVisible: isVisible, isFocused: isFocused)
+  }
+
+  static func shouldRestoreTerminalFirstResponder(_ responder: NSResponder?) -> Bool {
+    guard let responder else { return true }
+    if responder is GhosttySurfaceView {
+      return true
+    }
+    if let view = responder as? NSView {
+      return !view.acceptsFirstResponder
+    }
+    return false
   }
 
   @discardableResult
@@ -851,9 +867,11 @@ final class WorktreeTerminalState {
       inheritedFontSize: inherited.fontSize,
       context: context
     )
+    let workingDirectory = workingDirectoryOverride ?? inherited.workingDirectory ?? worktree.workingDirectory
+    let accessibleWorkingDirectory = accessibleWorkingDirectory(for: workingDirectory)
     let view = GhosttySurfaceView(
       runtime: runtime,
-      workingDirectory: workingDirectoryOverride ?? inherited.workingDirectory ?? worktree.workingDirectory,
+      workingDirectory: accessibleWorkingDirectory,
       initialInput: initialInput,
       fontSize: resolvedFontSize,
       context: context
@@ -869,6 +887,15 @@ final class WorktreeTerminalState {
     configureSurfaceCallbacks(for: view, tabId: tabId)
     surfaces[view.id] = view
     return view
+  }
+
+  private func accessibleWorkingDirectory(for url: URL) -> URL {
+    let normalizedURL = url.standardizedFileURL
+    let path = normalizedURL.path(percentEncoded: false)
+    if let session = workingDirectoryAccessSessions[path] { return session.url }
+    let session = RepositorySecurityScopedAccess.makeSession(for: normalizedURL)
+    workingDirectoryAccessSessions[path] = session
+    return session.url
   }
 
   private func configureBridgeCallbacks(for view: GhosttySurfaceView, tabId: TerminalTabID) {

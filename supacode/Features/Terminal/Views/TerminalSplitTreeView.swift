@@ -320,6 +320,8 @@ final class TerminalSplitAXContainerView: NSView {
   private var panesLabel: String = "Terminal split: 0 panes"
   private var lastPaneIDs: [UUID] = []
 
+  override var mouseDownCanMoveWindow: Bool { false }
+
   func update(rootView: AnyView, panes: [GhosttySurfaceView]) {
     if let hostingView {
       hostingView.rootView = rootView

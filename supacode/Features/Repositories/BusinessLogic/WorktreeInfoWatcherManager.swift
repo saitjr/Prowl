@@ -7,6 +7,8 @@ final class WorktreeInfoWatcherManager {
   private struct HeadWatcher {
     let headURL: URL
     let source: DispatchSourceFileSystemObject
+    let worktreeAccessSession: RepositorySecurityScopedAccess.Session
+    let headAccessSession: RepositorySecurityScopedAccess.Session
   }
 
   private struct RefreshTask {
@@ -161,12 +163,11 @@ final class WorktreeInfoWatcherManager {
   }
 
   private func configureWatcher(for worktree: Worktree) {
-    guard
-      let headURL = GitWorktreeHeadResolver.headURL(
-        for: worktree.workingDirectory,
-        fileManager: .default
-      )
-    else {
+    let worktreeAccessSession = RepositorySecurityScopedAccess.makeSession(for: worktree.workingDirectory)
+    guard let headURL = GitWorktreeHeadResolver.headURL(
+      for: worktreeAccessSession.url,
+      fileManager: .default
+    ) else {
       stopWatcher(for: worktree.id)
       return
     }
@@ -174,11 +175,20 @@ final class WorktreeInfoWatcherManager {
       return
     }
     stopWatcher(for: worktree.id)
-    startWatcher(worktreeID: worktree.id, headURL: headURL)
+    startWatcher(
+      worktreeID: worktree.id,
+      worktreeAccessSession: worktreeAccessSession,
+      headURL: headURL
+    )
   }
 
-  private func startWatcher(worktreeID: Worktree.ID, headURL: URL) {
-    let path = headURL.path(percentEncoded: false)
+  private func startWatcher(
+    worktreeID: Worktree.ID,
+    worktreeAccessSession: RepositorySecurityScopedAccess.Session,
+    headURL: URL
+  ) {
+    let headAccessSession = RepositorySecurityScopedAccess.makeSession(for: headURL)
+    let path = headAccessSession.url.path(percentEncoded: false)
     let fileDescriptor = open(path, O_EVTONLY)
     guard fileDescriptor >= 0 else {
       return
@@ -200,7 +210,12 @@ final class WorktreeInfoWatcherManager {
       close(fileDescriptor)
     }
     source.resume()
-    headWatchers[worktreeID] = HeadWatcher(headURL: headURL, source: source)
+    headWatchers[worktreeID] = HeadWatcher(
+      headURL: headURL,
+      source: source,
+      worktreeAccessSession: worktreeAccessSession,
+      headAccessSession: headAccessSession
+    )
   }
 
   private func handleEvent(

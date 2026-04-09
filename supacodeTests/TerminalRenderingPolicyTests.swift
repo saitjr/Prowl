@@ -88,6 +88,18 @@ struct TerminalRenderingPolicyTests {
     #expect(!activity.isFocused)
   }
 
+  @Test func restoreTerminalFirstResponderWhenWindowResponderIsMissing() {
+    #expect(WorktreeTerminalState.shouldRestoreTerminalFirstResponder(nil))
+  }
+
+  @Test func restoreTerminalFirstResponderWhenCurrentResponderCannotHoldFocus() {
+    #expect(WorktreeTerminalState.shouldRestoreTerminalFirstResponder(NSView()))
+  }
+
+  @Test func doNotRestoreTerminalFirstResponderOverInteractiveControls() {
+    #expect(!WorktreeTerminalState.shouldRestoreTerminalFirstResponder(NSTextField()))
+  }
+
   @Test func tabContentStackReturnsSelectedTabWhenItExists() {
     let selected = TerminalTabID()
     let tabs = [

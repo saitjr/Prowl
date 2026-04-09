@@ -1,3 +1,4 @@
+import Carbon
 import Testing
 
 @testable import supacode
@@ -35,6 +36,7 @@ struct ShortcutKeyTokenResolverTests {
       keyboardLayoutProvider: .init(baseScalarForKeyCode: { _ in "x".unicodeScalars.first })
     )
 
+    #expect(resolver.resolveKeyToken(keyCode: UInt16(kVK_Space), charactersIgnoringModifiers: " ") == "space")
     #expect(resolver.resolveKeyToken(keyCode: 36, charactersIgnoringModifiers: nil) == "return")
     #expect(resolver.resolveKeyToken(keyCode: 123, charactersIgnoringModifiers: nil) == "arrow_left")
     #expect(resolver.resolveKeyToken(keyCode: 124, charactersIgnoringModifiers: nil) == "arrow_right")

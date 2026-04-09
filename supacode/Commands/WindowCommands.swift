@@ -3,6 +3,8 @@ import SwiftUI
 struct WindowCommands: Commands {
   let ghosttyShortcuts: GhosttyShortcutManager
   let resolvedKeybindings: ResolvedKeybindingMap
+  let hotkeyWindowShortcut: KeyboardShortcut?
+  let hotkeyWindowShortcutDisplay: String?
   @FocusedValue(\.closeSurfaceAction) private var closeSurfaceAction
   @FocusedValue(\.selectPreviousTerminalTabAction) private var selectPreviousTerminalTabAction
   @FocusedValue(\.selectNextTerminalTabAction) private var selectNextTerminalTabAction
@@ -29,7 +31,19 @@ struct WindowCommands: Commands {
     }
 
     CommandGroup(replacing: .windowArrangement) {
+      Button("Toggle Hotkey Window") {
+        HotkeyWindowManager.shared.toggle()
+      }
+      .modifier(KeyboardShortcutModifier(shortcut: hotkeyWindowShortcut))
+      .help(
+        hotkeyWindowShortcutDisplay.map { "Toggle hotkey window (\($0))" }
+          ?? "Toggle hotkey window"
+      )
+
+      Divider()
+
       Button("Prowl") {
+        HotkeyWindowManager.shared.hideIfVisible()
         if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "main" }) {
           window.makeKeyAndOrderFront(nil)
           NSApp.activate(ignoringOtherApps: true)

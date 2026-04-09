@@ -26,6 +26,7 @@ struct SettingsFeature {
     var defaultWorktreeBaseDirectoryPath: String
     var restoreTerminalLayoutOnLaunch: Bool
     var terminalFontSize: Float32?
+    var hotkeyWindow: HotkeyWindowSettings
     var keybindingUserOverrides: KeybindingUserOverrideStore
     var cliInstallStatus: CLIInstallStatus = .notInstalled
     var cliInstallShowAlert: Bool = true
@@ -57,6 +58,7 @@ struct SettingsFeature {
         SupacodePaths.normalizedWorktreeBaseDirectoryPath(settings.defaultWorktreeBaseDirectoryPath) ?? ""
       restoreTerminalLayoutOnLaunch = settings.restoreTerminalLayoutOnLaunch
       terminalFontSize = settings.terminalFontSize
+      hotkeyWindow = settings.hotkeyWindow.normalized
       keybindingUserOverrides = settings.keybindingUserOverrides
     }
 
@@ -85,6 +87,7 @@ struct SettingsFeature {
         ),
         restoreTerminalLayoutOnLaunch: restoreTerminalLayoutOnLaunch,
         terminalFontSize: terminalFontSize,
+        hotkeyWindow: hotkeyWindow.normalized,
         keybindingUserOverrides: keybindingUserOverrides
       )
     }
@@ -97,6 +100,7 @@ struct SettingsFeature {
     case setSystemNotificationsEnabled(Bool)
     case setCommandFinishedNotificationThreshold(String)
     case setTerminalFontSize(Float32?)
+    case setHotkeyWindowHotkey(Keybinding?)
     case clearTerminalLayoutSnapshotButtonTapped
     case installCLIButtonTapped(showAlert: Bool = true)
     case uninstallCLIButtonTapped
@@ -145,15 +149,18 @@ struct SettingsFeature {
         let normalizedDefaultEditorID = OpenWorktreeAction.normalizedDefaultEditorID(settings.defaultEditorID)
         let normalizedWorktreeBaseDirPath =
           SupacodePaths.normalizedWorktreeBaseDirectoryPath(settings.defaultWorktreeBaseDirectoryPath)
+        let normalizedHotkeyWindow = settings.hotkeyWindow.normalized
         let normalizedSettings: GlobalSettings
         if normalizedDefaultEditorID == settings.defaultEditorID,
-          normalizedWorktreeBaseDirPath == settings.defaultWorktreeBaseDirectoryPath
+          normalizedWorktreeBaseDirPath == settings.defaultWorktreeBaseDirectoryPath,
+          normalizedHotkeyWindow == settings.hotkeyWindow
         {
           normalizedSettings = settings
         } else {
           var updatedSettings = settings
           updatedSettings.defaultEditorID = normalizedDefaultEditorID
           updatedSettings.defaultWorktreeBaseDirectoryPath = normalizedWorktreeBaseDirPath
+          updatedSettings.hotkeyWindow = normalizedHotkeyWindow
           normalizedSettings = updatedSettings
           @Shared(.settingsFile) var settingsFile
           $settingsFile.withLock { $0.global = normalizedSettings }
@@ -179,6 +186,7 @@ struct SettingsFeature {
         state.defaultWorktreeBaseDirectoryPath = normalizedSettings.defaultWorktreeBaseDirectoryPath ?? ""
         state.restoreTerminalLayoutOnLaunch = normalizedSettings.restoreTerminalLayoutOnLaunch
         state.terminalFontSize = normalizedSettings.terminalFontSize
+        state.hotkeyWindow = normalizedSettings.hotkeyWindow.normalized
         state.keybindingUserOverrides = normalizedSettings.keybindingUserOverrides
         state.repositorySettings?.globalDefaultWorktreeBaseDirectoryPath =
           normalizedSettings.defaultWorktreeBaseDirectoryPath
@@ -186,6 +194,7 @@ struct SettingsFeature {
 
       case .binding:
         state.commandFinishedNotificationThreshold = min(max(state.commandFinishedNotificationThreshold, 0), 600)
+        state.hotkeyWindow = state.hotkeyWindow.normalized
         let defaultWorktreeBaseDirectoryPath = state.globalSettings.defaultWorktreeBaseDirectoryPath
         state.repositorySettings?.globalDefaultWorktreeBaseDirectoryPath =
           defaultWorktreeBaseDirectoryPath
@@ -213,6 +222,12 @@ struct SettingsFeature {
           persist(state, captureAnalytics: false, emitSettingsChanged: false),
           .send(.delegate(.terminalFontSizeChanged(fontSize)))
         )
+
+      case .setHotkeyWindowHotkey(let hotkey):
+        guard state.hotkeyWindow.hotkey != hotkey else { return .none }
+        state.hotkeyWindow.hotkey = hotkey
+        state.hotkeyWindow = state.hotkeyWindow.normalized
+        return persist(state)
 
       case .clearTerminalLayoutSnapshotButtonTapped:
         return .run { send in

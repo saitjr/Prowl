@@ -4,6 +4,12 @@ import Sharing
 
 nonisolated struct RepositoryEntriesKeyID: Hashable, Sendable {}
 
+nonisolated struct SecurityScopedBookmarksFileURLKey: DependencyKey {
+  static var liveValue: URL { SupacodePaths.securityScopedBookmarksURL }
+  static var previewValue: URL { SupacodePaths.securityScopedBookmarksURL }
+  static var testValue: URL { SupacodePaths.securityScopedBookmarksURL }
+}
+
 nonisolated enum RepositoryEntriesFileURLKey: DependencyKey {
   static var liveValue: URL { SupacodePaths.repositoryEntriesURL }
   static var previewValue: URL { SupacodePaths.repositoryEntriesURL }
@@ -11,6 +17,11 @@ nonisolated enum RepositoryEntriesFileURLKey: DependencyKey {
 }
 
 extension DependencyValues {
+  nonisolated var securityScopedBookmarksFileURL: URL {
+    get { self[SecurityScopedBookmarksFileURLKey.self] }
+    set { self[SecurityScopedBookmarksFileURLKey.self] = newValue }
+  }
+
   nonisolated var repositoryEntriesFileURL: URL {
     get { self[RepositoryEntriesFileURLKey.self] }
     set { self[RepositoryEntriesFileURLKey.self] = newValue }
@@ -75,6 +86,56 @@ nonisolated struct RepositoryEntriesKey: SharedKey {
 }
 
 nonisolated struct RepositoryRootsKeyID: Hashable, Sendable {}
+
+nonisolated struct SecurityScopedBookmarksKeyID: Hashable, Sendable {}
+
+nonisolated struct SecurityScopedBookmarksKey: SharedKey {
+  var id: SecurityScopedBookmarksKeyID {
+    SecurityScopedBookmarksKeyID()
+  }
+
+  func load(
+    context _: LoadContext<[String: Data]>,
+    continuation: LoadContinuation<[String: Data]>
+  ) {
+    @Dependency(\.settingsFileStorage) var storage
+    @Dependency(\.securityScopedBookmarksFileURL) var securityScopedBookmarksFileURL
+    let decoder = JSONDecoder()
+    if let data = try? storage.load(securityScopedBookmarksFileURL),
+      let bookmarks = try? decoder.decode([String: Data].self, from: data)
+    {
+      continuation.resume(returning: SecurityScopedBookmarkNormalizer.normalize(bookmarks))
+      return
+    }
+    continuation.resume(returning: [:])
+  }
+
+  func subscribe(
+    context _: LoadContext<[String: Data]>,
+    subscriber _: SharedSubscriber<[String: Data]>
+  ) -> SharedSubscription {
+    SharedSubscription {}
+  }
+
+  func save(
+    _ value: [String: Data],
+    context _: SaveContext,
+    continuation: SaveContinuation
+  ) {
+    @Dependency(\.settingsFileStorage) var storage
+    @Dependency(\.securityScopedBookmarksFileURL) var securityScopedBookmarksFileURL
+    let normalized = SecurityScopedBookmarkNormalizer.normalize(value)
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    do {
+      let data = try encoder.encode(normalized)
+      try storage.save(data, securityScopedBookmarksFileURL)
+      continuation.resume()
+    } catch {
+      continuation.resume(throwing: error)
+    }
+  }
+}
 
 nonisolated struct RepositoryRootsKey: SharedKey {
   var id: RepositoryRootsKeyID {
@@ -160,6 +221,12 @@ nonisolated extension SharedReaderKey where Self == RepositoryRootsKey.Default {
   }
 }
 
+nonisolated extension SharedReaderKey where Self == SecurityScopedBookmarksKey.Default {
+  static var securityScopedBookmarks: Self {
+    Self[SecurityScopedBookmarksKey(), default: [:]]
+  }
+}
+
 nonisolated extension SharedReaderKey where Self == RepositoryEntriesKey.Default {
   static var repositoryEntries: Self {
     Self[RepositoryEntriesKey(), default: []]
@@ -191,35 +258,55 @@ nonisolated enum RepositoryPathNormalizer {
 nonisolated enum RepositoryEntryNormalizer {
   static func normalize(_ entries: [PersistedRepositoryEntry]) -> [PersistedRepositoryEntry] {
     var order: [String] = []
-    var kindByPath: [String: Repository.Kind] = [:]
+    var entryByPath: [String: PersistedRepositoryEntry] = [:]
 
     for entry in entries {
       guard let normalizedPath = normalizePath(entry.path) else { continue }
-      if let existing = kindByPath[normalizedPath] {
-        kindByPath[normalizedPath] = resolvedKind(existing: existing, incoming: entry.kind)
+      let normalizedEntry = PersistedRepositoryEntry(
+        path: normalizedPath,
+        kind: entry.kind,
+        bookmarkData: entry.bookmarkData
+      )
+      if let existing = entryByPath[normalizedPath] {
+        entryByPath[normalizedPath] = resolvedEntry(existing: existing, incoming: normalizedEntry)
         continue
       }
       order.append(normalizedPath)
-      kindByPath[normalizedPath] = entry.kind
+      entryByPath[normalizedPath] = normalizedEntry
     }
 
     return order.compactMap { path in
-      guard let kind = kindByPath[path] else { return nil }
-      return PersistedRepositoryEntry(path: path, kind: kind)
+      entryByPath[path]
     }
   }
 
-  private static func resolvedKind(
-    existing: Repository.Kind,
-    incoming: Repository.Kind
-  ) -> Repository.Kind {
-    if existing == .git || incoming == .git {
-      return .git
-    }
-    return .plain
+  private static func resolvedEntry(
+    existing: PersistedRepositoryEntry,
+    incoming: PersistedRepositoryEntry
+  ) -> PersistedRepositoryEntry {
+    PersistedRepositoryEntry(
+      path: existing.path,
+      kind: resolvedKind(existing: existing.kind, incoming: incoming.kind),
+      bookmarkData: existing.bookmarkData ?? incoming.bookmarkData
+    )
+  }
+
+  private static func resolvedKind(existing: Repository.Kind, incoming: Repository.Kind) -> Repository.Kind {
+    existing == .git || incoming == .git ? .git : .plain
   }
 
   private static func normalizePath(_ path: String) -> String? {
     RepositoryPathNormalizer.normalize([path]).first
+  }
+}
+
+nonisolated enum SecurityScopedBookmarkNormalizer {
+  static func normalize(_ bookmarks: [String: Data]) -> [String: Data] {
+    var normalized: [String: Data] = [:]
+    for (path, data) in bookmarks {
+      guard let normalizedPath = RepositoryPathNormalizer.normalize([path]).first else { continue }
+      normalized[normalizedPath] = data
+    }
+    return normalized
   }
 }

@@ -26,7 +26,16 @@ struct SettingsFeatureTests {
       githubIntegrationEnabled: true,
       deleteBranchOnDeleteWorktree: false,
       automaticallyArchiveMergedWorktrees: true,
-      promptForWorktreeCreation: true
+      promptForWorktreeCreation: true,
+      hotkeyWindow: HotkeyWindowSettings(
+        isEnabled: true,
+        hotkey: Keybinding(
+          key: "`",
+          modifiers: KeybindingModifiers(command: true, control: true)
+        ),
+        widthRatio: 0.9,
+        heightRatio: 0.6
+      )
     )
     @Shared(.settingsFile) var settingsFile
     $settingsFile.withLock { $0.global = loaded }
@@ -53,8 +62,33 @@ struct SettingsFeatureTests {
       $0.deleteBranchOnDeleteWorktree = false
       $0.automaticallyArchiveMergedWorktrees = true
       $0.promptForWorktreeCreation = true
+      $0.hotkeyWindow = HotkeyWindowSettings(
+        isEnabled: true,
+        hotkey: Keybinding(
+          key: "`",
+          modifiers: KeybindingModifiers(command: true, control: true)
+        ),
+        widthRatio: 0.9,
+        heightRatio: 0.6
+      )
     }
     await store.receive(\.delegate.settingsChanged)
+  }
+
+  @Test(.dependencies) func hotkeyWindowSettingsAreNormalizedBeforePersist() async {
+    @Shared(.settingsFile) var settingsFile
+    $settingsFile.withLock { $0.global = .default }
+
+    let store = TestStore(initialState: SettingsFeature.State()) {
+      SettingsFeature()
+    }
+
+    await store.send(.binding(.set(\.hotkeyWindow.widthRatio, 2))) {
+      $0.hotkeyWindow.widthRatio = 1
+    }
+    await store.receive(\.delegate.settingsChanged)
+
+    #expect(settingsFile.global.hotkeyWindow.widthRatio == 1)
   }
 
   @Test(.dependencies) func savesUpdatesChanges() async {

@@ -2,6 +2,12 @@ import AppKit
 import SwiftUI
 
 struct SplitView<L: View, R: View>: View {
+  struct DragContext {
+    let size: CGSize
+    let minSize: CGFloat
+    let resizeIncrements: CGSize
+  }
+
   let direction: Direction
   let dividerColor: Color
   let resizeIncrements: CGSize
@@ -10,6 +16,7 @@ struct SplitView<L: View, R: View>: View {
   let onEqualize: () -> Void
   let minSize: CGFloat = 10
   @Binding var split: CGFloat
+  @State private var dragStartSplit: CGFloat?
   private let splitterVisibleSize: CGFloat = 1
   private let splitterInvisibleSize: CGFloat = 6
 
@@ -62,15 +69,59 @@ struct SplitView<L: View, R: View>: View {
   private func dragGesture(_ size: CGSize) -> some Gesture {
     DragGesture()
       .onChanged { gesture in
-        switch direction {
-        case .horizontal:
-          let new = min(max(minSize, gesture.location.x), size.width - minSize)
-          split = new / size.width
-        case .vertical:
-          let new = min(max(minSize, gesture.location.y), size.height - minSize)
-          split = new / size.height
+        let startSplit = dragStartSplit ?? split
+        if dragStartSplit == nil {
+          dragStartSplit = split
         }
+        split = Self.updatedSplit(
+          direction: direction,
+          currentSplit: startSplit,
+          translation: gesture.translation,
+          context: DragContext(
+            size: size,
+            minSize: minSize,
+            resizeIncrements: resizeIncrements
+          )
+        )
       }
+      .onEnded { _ in
+        dragStartSplit = nil
+      }
+  }
+
+  static func updatedSplit(
+    direction: Direction,
+    currentSplit: CGFloat,
+    translation: CGSize,
+    context: DragContext
+  ) -> CGFloat {
+    let axisLength: CGFloat
+    let axisTranslation: CGFloat
+    let axisIncrement: CGFloat
+
+    switch direction {
+    case .horizontal:
+      axisLength = context.size.width
+      axisTranslation = translation.width
+      axisIncrement = context.resizeIncrements.width
+    case .vertical:
+      axisLength = context.size.height
+      axisTranslation = translation.height
+      axisIncrement = context.resizeIncrements.height
+    }
+
+    guard axisLength > 0 else {
+      return currentSplit
+    }
+
+    let startPosition = currentSplit * axisLength
+    let clampedPosition = min(
+      max(context.minSize, startPosition + axisTranslation),
+      axisLength - context.minSize
+    )
+    let safeIncrement = max(axisIncrement, 1)
+    let snappedPosition = clampedPosition - clampedPosition.truncatingRemainder(dividingBy: safeIncrement)
+    return snappedPosition / axisLength
   }
 
   private func leftRect(for size: CGSize) -> CGRect {

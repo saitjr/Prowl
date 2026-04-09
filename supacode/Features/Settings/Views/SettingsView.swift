@@ -35,6 +35,8 @@ struct SettingsView: View {
             .tag(SettingsSection.notifications)
           Label("Shortcuts", systemImage: "keyboard")
             .tag(SettingsSection.shortcuts)
+          Label("Hotkey Window", systemImage: "macwindow")
+            .tag(SettingsSection.hotkeyWindow)
           Label("Worktree", systemImage: "archivebox")
             .tag(SettingsSection.worktree)
           Label("Updates", systemImage: "arrow.down.circle")
@@ -75,6 +77,12 @@ struct SettingsView: View {
           ShortcutsSettingsView(store: settingsStore)
             .navigationTitle("Shortcuts")
             .navigationSubtitle("Global keybindings")
+        }
+      case .hotkeyWindow:
+        SettingsDetailView {
+          HotkeyWindowSettingsView(store: settingsStore)
+            .navigationTitle("Hotkey Window")
+            .navigationSubtitle("Quick show and hide behavior")
         }
       case .worktree:
         SettingsDetailView {

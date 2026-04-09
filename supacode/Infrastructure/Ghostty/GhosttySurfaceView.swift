@@ -123,6 +123,7 @@ final class GhosttySurfaceView: NSView, Identifiable {
   private var notificationObservers: [NSObjectProtocol] = []
   private var prevPressureStage: Int = 0
   private var isBackgroundOpaqueOverride = false
+  private var suppressNextLeftMouseUp = false
   private lazy var cachedScreenContents = CachedValue<String>(duration: .milliseconds(500)) {
     [weak self] in
     self?.readScreenContents() ?? ""
@@ -482,6 +483,8 @@ final class GhosttySurfaceView: NSView, Identifiable {
     surface != nil
   }
 
+  override var mouseDownCanMoveWindow: Bool { false }
+
   override func accessibilityRole() -> NSAccessibility.Role? {
     // Match Ghostty.app so speech/input tools can treat the surface as editable text.
     .textArea
@@ -739,6 +742,10 @@ final class GhosttySurfaceView: NSView, Identifiable {
   }
 
   override func mouseUp(with event: NSEvent) {
+    if suppressNextLeftMouseUp {
+      suppressNextLeftMouseUp = false
+      return
+    }
     prevPressureStage = 0
     sendMouseButton(event, state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_LEFT)
     if let surface {
@@ -874,8 +881,13 @@ final class GhosttySurfaceView: NSView, Identifiable {
     guard let window, event.window != nil, window == event.window else { return event }
     let location = convert(event.locationInWindow, from: nil)
     guard hitTest(location) == self else { return event }
-    guard !NSApp.isActive || !window.isKeyWindow else { return event }
-    guard !focused else { return event }
+    suppressNextLeftMouseUp = false
+    guard window.firstResponder !== self else { return event }
+    if NSApp.isActive && window.isKeyWindow {
+      window.makeFirstResponder(self)
+      suppressNextLeftMouseUp = true
+      return nil
+    }
     window.makeFirstResponder(self)
     return event
   }
@@ -2323,12 +2335,15 @@ final class GhosttySurfaceScrollView: NSView {
     fatalError("init(coder:) is not supported")
   }
 
+  override var mouseDownCanMoveWindow: Bool { false }
+
   isolated deinit {
     observers.forEach { NotificationCenter.default.removeObserver($0) }
   }
 
   override func layout() {
     super.layout()
+    ensureSurfaceViewAttached()
     let effectiveSize = pinnedSize ?? bounds.size
     scrollView.frame = CGRect(origin: .zero, size: effectiveSize)
     surfaceView.frame.size = effectiveSize
@@ -2341,6 +2356,26 @@ final class GhosttySurfaceScrollView: NSView {
   func updateSurfaceSize() {
     surfaceView.updateSurfaceSize()
     needsLayout = true
+  }
+
+  func ensureSurfaceViewAttached() {
+    guard surfaceView.superview !== documentView || surfaceView.scrollWrapper !== self else { return }
+    guard shouldTakeSurfaceOwnership else { return }
+    if let currentOwner = surfaceView.scrollWrapper, currentOwner !== self, currentOwner.shouldKeepSurfaceOwnership {
+      return
+    }
+    documentView.addSubview(surfaceView)
+    surfaceView.scrollWrapper = self
+  }
+
+  private var shouldTakeSurfaceOwnership: Bool {
+    guard let window else { return surfaceView.scrollWrapper == nil }
+    return window.isVisible && window.occlusionState.contains(.visible)
+  }
+
+  private var shouldKeepSurfaceOwnership: Bool {
+    guard let window else { return false }
+    return window.isVisible && window.occlusionState.contains(.visible)
   }
 
   func updateScrollbar(total: UInt64, offset: UInt64, length: UInt64) {

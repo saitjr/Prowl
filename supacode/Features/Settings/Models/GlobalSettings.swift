@@ -20,6 +20,7 @@ nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
   var defaultWorktreeBaseDirectoryPath: String?
   var restoreTerminalLayoutOnLaunch: Bool
   var terminalFontSize: Float32?
+  var hotkeyWindow: HotkeyWindowSettings
   var keybindingUserOverrides: KeybindingUserOverrideStore
 
   static let `default` = GlobalSettings(
@@ -44,6 +45,7 @@ nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     defaultWorktreeBaseDirectoryPath: nil,
     restoreTerminalLayoutOnLaunch: false,
     terminalFontSize: nil,
+    hotkeyWindow: .default,
     keybindingUserOverrides: .empty
   )
 
@@ -69,6 +71,7 @@ nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     defaultWorktreeBaseDirectoryPath: String? = nil,
     restoreTerminalLayoutOnLaunch: Bool = false,
     terminalFontSize: Float32? = nil,
+    hotkeyWindow: HotkeyWindowSettings = .default,
     keybindingUserOverrides: KeybindingUserOverrideStore = .empty
   ) {
     self.appearanceMode = appearanceMode
@@ -92,6 +95,7 @@ nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     self.defaultWorktreeBaseDirectoryPath = defaultWorktreeBaseDirectoryPath
     self.restoreTerminalLayoutOnLaunch = restoreTerminalLayoutOnLaunch
     self.terminalFontSize = terminalFontSize
+    self.hotkeyWindow = hotkeyWindow.normalized
     self.keybindingUserOverrides = keybindingUserOverrides
   }
 
@@ -154,6 +158,9 @@ nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     terminalFontSize =
       try container.decodeIfPresent(Float32.self, forKey: .terminalFontSize)
       ?? Self.default.terminalFontSize
+    hotkeyWindow =
+      try container.decodeIfPresent(HotkeyWindowSettings.self, forKey: .hotkeyWindow)
+      ?? Self.default.hotkeyWindow
     keybindingUserOverrides =
       try container.decodeIfPresent(KeybindingUserOverrideStore.self, forKey: .keybindingUserOverrides)
       ?? Self.default.keybindingUserOverrides

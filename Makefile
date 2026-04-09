@@ -16,6 +16,8 @@ GHOSTTY_BUILD_OUTPUTS := $(GHOSTTY_XCFRAMEWORK_PATH) $(GHOSTTY_RESOURCE_PATH) $(
 GHOSTTY_BUILD_STAMP := $(CURRENT_MAKEFILE_DIR)/.ghostty_build_stamp
 GHOSTTY_HASH_FILE := $(CURRENT_MAKEFILE_DIR)/.ghostty_hash
 SPM_CACHE_DIR := /tmp/supacode-spm-cache/SourcePackages
+DEBUG_DERIVED_DATA_DIR := $(CURRENT_MAKEFILE_DIR)/build/DerivedData/Debug
+TEST_DERIVED_DATA_DIR := $(CURRENT_MAKEFILE_DIR)/build/DerivedData/Test
 VERSION ?=
 BUILD ?=
 XCODEBUILD_FLAGS ?=
@@ -83,7 +85,7 @@ sync-ghostty: # Force sync GhosttyKit to current submodule HEAD (always rebuilds
 	@echo "Done. Xcode module cache cleared for fresh compilation."
 
 build-app: ensure-ghostty embed-cli-debug # Build the macOS app (Debug)
-	bash -o pipefail -c 'xcodebuild -project supacode.xcodeproj -scheme supacode -configuration Debug build -skipMacroValidation -clonedSourcePackagesDirPath $(SPM_CACHE_DIR) 2>&1 | mise exec -- xcsift -qw --format toon'
+	bash -o pipefail -c 'xcodebuild -project supacode.xcodeproj -scheme supacode -configuration Debug -derivedDataPath $(DEBUG_DERIVED_DATA_DIR) build -skipMacroValidation -clonedSourcePackagesDirPath $(SPM_CACHE_DIR) 2>&1 | mise exec -- xcsift -qw --format toon'
 
 sync-cli-version: # Sync app MARKETING_VERSION into ProwlCLIShared/ProwlVersion.swift
 	@version="$$(/usr/bin/awk -F' = ' '/MARKETING_VERSION = [0-9.]*;/{gsub(/;/,"",$$2);print $$2; exit}' \
@@ -117,7 +119,7 @@ embed-cli: build-cli-release # Build release CLI and copy into Resources for dis
 
 run-app: build-app # Build then launch (Debug) with log streaming
 	@set -euo pipefail; \
-	settings="$$(xcodebuild -project supacode.xcodeproj -scheme supacode -configuration Debug -showBuildSettings -json 2>/dev/null)"; \
+	settings="$$(xcodebuild -project supacode.xcodeproj -scheme supacode -configuration Debug -derivedDataPath $(DEBUG_DERIVED_DATA_DIR) -showBuildSettings -json 2>/dev/null)"; \
 	build_dir="$$(echo "$$settings" | jq -er '.[0].buildSettings.BUILT_PRODUCTS_DIR')"; \
 	product="$$(echo "$$settings" | jq -er '.[0].buildSettings.FULL_PRODUCT_NAME')"; \
 	exec_name="$$(echo "$$settings" | jq -r '.[0].buildSettings.EXECUTABLE_NAME')"; \
@@ -129,7 +131,7 @@ run-app: build-app # Build then launch (Debug) with log streaming
 
 install-dev-build: build-app # install dev build to /Applications
 	@set -euo pipefail; \
-	settings="$$(xcodebuild -project supacode.xcodeproj -scheme supacode -configuration Debug -showBuildSettings -json 2>/dev/null)"; \
+	settings="$$(xcodebuild -project supacode.xcodeproj -scheme supacode -configuration Debug -derivedDataPath $(DEBUG_DERIVED_DATA_DIR) -showBuildSettings -json 2>/dev/null)"; \
 	build_dir="$$(echo "$$settings" | jq -er '.[0].buildSettings.BUILT_PRODUCTS_DIR')"; \
 	product="$$(echo "$$settings" | jq -er '.[0].buildSettings.FULL_PRODUCT_NAME')"; \
 	if [ -z "$$build_dir" ] || [ -z "$$product" ] || [ "$$build_dir" = "null" ] || [ "$$product" = "null" ]; then \
@@ -273,7 +275,7 @@ test: ensure-ghostty
 	mkdir -p "$$(dirname "$$result_bundle")"; \
 	rm -rf "$$result_bundle"; \
 	set +e; \
-	xcodebuild test -project supacode.xcodeproj -scheme supacode -destination "platform=macOS" -resultBundlePath "$$result_bundle" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" -skipMacroValidation -clonedSourcePackagesDirPath $(SPM_CACHE_DIR) 2>&1 | mise exec -- xcsift -w --format toon; \
+	xcodebuild test -project supacode.xcodeproj -scheme supacode -destination "platform=macOS" -derivedDataPath $(TEST_DERIVED_DATA_DIR) -resultBundlePath "$$result_bundle" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" -skipMacroValidation -clonedSourcePackagesDirPath $(SPM_CACHE_DIR) 2>&1 | mise exec -- xcsift -w --format toon; \
 	xcodebuild_status=$${PIPESTATUS[0]}; \
 	set -e; \
 	if [ "$$xcodebuild_status" -ne 0 ]; then \

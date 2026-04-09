@@ -74,6 +74,7 @@ final class SupacodeAppDelegate: NSObject, NSApplicationDelegate {
   }
 
   private func showMainWindow(from sender: NSApplication) -> Bool {
+    HotkeyWindowManager.shared.hideIfVisible()
     guard let window = mainWindow(from: sender) else { return false }
     if window.isMiniaturized {
       window.deminiaturize(nil)
@@ -105,6 +106,29 @@ struct SupacodeApp: App {
     }
     let path = args[flagIndex + 1]
     return path.isEmpty ? nil : path
+  }
+
+  @MainActor
+  private func configureWindowManagers(
+    appStore: StoreOf<AppFeature>,
+    terminalManager: WorktreeTerminalManager,
+    cliServer: CLISocketServer,
+    hotkeyWindowSettings: HotkeyWindowSettings
+  ) {
+    appDelegate.appStore = appStore
+    appDelegate.terminalManager = terminalManager
+    appDelegate.cliSocketServer = cliServer
+    HotkeyWindowManager.shared.configure(
+      mainWindowProvider: {
+        Self.mainWindow(from: NSApplication.shared)
+      },
+      settings: hotkeyWindowSettings
+    )
+    SettingsWindowManager.shared.configure(
+      store: appStore,
+      ghosttyShortcuts: ghosttyShortcuts,
+      commandKeyObserver: commandKeyObserver
+    )
   }
 
   @MainActor init() {
@@ -197,13 +221,11 @@ struct SupacodeApp: App {
     runtime.onQuit = { [weak appStore] in
       appStore?.send(.requestQuit)
     }
-    appDelegate.appStore = appStore
-    appDelegate.terminalManager = terminalManager
-    appDelegate.cliSocketServer = cliServer
-    SettingsWindowManager.shared.configure(
-      store: appStore,
-      ghosttyShortcuts: shortcuts,
-      commandKeyObserver: keyObserver
+    configureWindowManagers(
+      appStore: appStore,
+      terminalManager: terminalManager,
+      cliServer: cliServer,
+      hotkeyWindowSettings: initialSettings.hotkeyWindow
     )
   }
 
@@ -541,6 +563,7 @@ struct SupacodeApp: App {
   }
 
   private static func bringMainWindowToFront() -> Bool {
+    HotkeyWindowManager.shared.hideIfVisible()
     let app = NSApplication.shared
     guard let window = mainWindow(from: app) else {
       return false
@@ -577,6 +600,9 @@ struct SupacodeApp: App {
       .onChange(of: store.resolvedKeybindings) { _, newValue in
         syncGhosttyManagedShortcuts(with: newValue)
       }
+      .onChange(of: store.settings.hotkeyWindow) { _, newValue in
+        HotkeyWindowManager.shared.update(settings: newValue)
+      }
       .preferredColorScheme(store.settings.appearanceMode.colorScheme)
     }
     .environment(ghosttyShortcuts)
@@ -587,7 +613,11 @@ struct SupacodeApp: App {
       TerminalCommands(ghosttyShortcuts: ghosttyShortcuts)
       WindowCommands(
         ghosttyShortcuts: ghosttyShortcuts,
-        resolvedKeybindings: store.resolvedKeybindings
+        resolvedKeybindings: store.resolvedKeybindings,
+        hotkeyWindowShortcut: store.settings.hotkeyWindow.isEnabled
+          ? store.settings.hotkeyWindow.hotkey?.keyboardShortcut : nil,
+        hotkeyWindowShortcutDisplay: store.settings.hotkeyWindow.isEnabled
+          ? store.settings.hotkeyWindow.hotkey?.display : nil
       )
       CommandGroup(after: .textEditing) {
         Button("Command Palette") {

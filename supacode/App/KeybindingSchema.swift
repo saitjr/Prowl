@@ -97,6 +97,8 @@ nonisolated struct Keybinding: Codable, Equatable, Sendable {
 
   private static func displayKey(for key: String) -> String {
     switch key {
+    case "space":
+      return "␠"
     case "return":
       return "↩"
     case "arrow_up":

@@ -233,4 +233,29 @@ struct GhosttySurfaceViewTests {
     #expect(!suppression.suppresses(keyCode: 49, timestamp: 11.1))
     #expect(suppression.isExpired(at: 11.1))
   }
+
+  @Test func ghosttySurfaceViewDoesNotAllowWindowDraggingFromMouseDown() {
+    let runtime = GhosttyRuntime()
+    let surfaceView = GhosttySurfaceView(
+      runtime: runtime,
+      workingDirectory: nil,
+      context: GHOSTTY_SURFACE_CONTEXT_TAB,
+      skipsSurfaceCreationForTesting: true
+    )
+
+    #expect(surfaceView.mouseDownCanMoveWindow == false)
+  }
+
+  @Test func ghosttySurfaceScrollViewDoesNotAllowWindowDraggingFromMouseDown() {
+    let runtime = GhosttyRuntime()
+    let surfaceView = GhosttySurfaceView(
+      runtime: runtime,
+      workingDirectory: nil,
+      context: GHOSTTY_SURFACE_CONTEXT_TAB,
+      skipsSurfaceCreationForTesting: true
+    )
+    let scrollView = GhosttySurfaceScrollView(surfaceView: surfaceView)
+
+    #expect(scrollView.mouseDownCanMoveWindow == false)
+  }
 }

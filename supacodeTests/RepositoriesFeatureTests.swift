@@ -417,6 +417,8 @@ struct RepositoriesFeatureTests {
       worktrees: []
     )
     let savedEntries = LockIsolated<[[PersistedRepositoryEntry]]>([])
+    let repoBookmark = Data("repo-bookmark".utf8)
+    let plainBookmark = Data("plain-bookmark".utf8)
 
     let store = TestStore(initialState: RepositoriesFeature.State()) {
       RepositoriesFeature()
@@ -445,6 +447,16 @@ struct RepositoriesFeatureTests {
         Issue.record("worktrees should not load for plain repository: \(path)")
         return []
       }
+      $0.repositoryBookmarkClient.makeBookmarkData = { url in
+        switch url.path(percentEncoded: false) {
+        case repoRoot:
+          return repoBookmark
+        case plainRoot:
+          return plainBookmark
+        default:
+          return nil
+        }
+      }
     }
 
     await store.send(
@@ -465,8 +477,8 @@ struct RepositoriesFeatureTests {
 
     let expectedSavedEntries = [
       [
-        PersistedRepositoryEntry(path: repoRoot, kind: .git),
-        PersistedRepositoryEntry(path: plainRoot, kind: .plain),
+        PersistedRepositoryEntry(path: repoRoot, kind: .git, bookmarkData: repoBookmark),
+        PersistedRepositoryEntry(path: plainRoot, kind: .plain, bookmarkData: plainBookmark),
       ],
     ]
     #expect(savedEntries.value == expectedSavedEntries)
@@ -479,6 +491,7 @@ struct RepositoriesFeatureTests {
     let worktree = makeWorktree(id: "\(repoRoot)/main", name: "main", repoRoot: repoRoot)
     let repository = makeRepository(id: repoRoot, worktrees: [worktree])
     let savedEntries = LockIsolated<[[PersistedRepositoryEntry]]>([])
+    let repoBookmark = Data("repo-bookmark".utf8)
 
     let store = TestStore(initialState: RepositoriesFeature.State()) {
       RepositoriesFeature()
@@ -502,6 +515,9 @@ struct RepositoriesFeatureTests {
       $0.gitClient.worktrees = { url in
         #expect(url.path(percentEncoded: false) == repoRoot)
         return [worktree]
+      }
+      $0.repositoryBookmarkClient.makeBookmarkData = { url in
+        url.path(percentEncoded: false) == repoRoot ? repoBookmark : nil
       }
     }
 
@@ -533,9 +549,31 @@ struct RepositoriesFeatureTests {
     await store.finish()
 
     let expectedSavedEntries = [
-      [PersistedRepositoryEntry(path: repoRoot, kind: .git)]
+      [PersistedRepositoryEntry(path: repoRoot, kind: .git, bookmarkData: repoBookmark)]
     ]
     #expect(savedEntries.value == expectedSavedEntries)
+  }
+
+  @Test func upgradedRepositoryEntriesPreservesBookmarkDataWhenKindChanges() async {
+    let bookmark = Data("repo-bookmark".utf8)
+    let feature = RepositoriesFeature()
+
+    let result = await withDependencies {
+      $0.gitClient.repoRoot = { url in
+        #expect(url.path(percentEncoded: false) == "/tmp/repo")
+        return URL(fileURLWithPath: "/tmp/repo")
+      }
+    } operation: {
+      await feature.upgradedRepositoryEntriesIfNeeded([
+        PersistedRepositoryEntry(path: "/tmp/repo", kind: .plain, bookmarkData: bookmark)
+      ])
+    }
+
+    #expect(
+      result == [
+        PersistedRepositoryEntry(path: "/tmp/repo", kind: .git, bookmarkData: bookmark)
+      ]
+    )
   }
 
   @Test func repositoriesLoadedSkipsRepositorySnapshotPersistenceWhileRestoring() async {

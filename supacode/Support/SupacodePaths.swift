@@ -113,6 +113,10 @@ nonisolated enum SupacodePaths {
     baseDirectory.appending(path: "repository-entries.json", directoryHint: .notDirectory)
   }
 
+  static var securityScopedBookmarksURL: URL {
+    baseDirectory.appending(path: "security-scoped-bookmarks.json", directoryHint: .notDirectory)
+  }
+
   static func migrateLegacyCacheFilesIfNeeded(
     fileManager: FileManager = .default,
     legacyDirectory: URL? = nil,

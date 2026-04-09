@@ -54,12 +54,13 @@ struct RepositoryPersistenceClientTests {
   @Test(.dependencies) func savesAndLoadsRepositoryEntries() async throws {
     let storage = SettingsTestStorage()
     let client = RepositoryPersistenceClient.liveValue
+    let bookmark = Data("repo-a".utf8)
 
     let result = await withDependencies {
       $0.settingsFileStorage = storage.storage
     } operation: {
       await client.saveRepositoryEntries([
-        PersistedRepositoryEntry(path: "/tmp/repo-a", kind: .git),
+        PersistedRepositoryEntry(path: "/tmp/repo-a", kind: .git, bookmarkData: bookmark),
         PersistedRepositoryEntry(path: "/tmp/repo-a", kind: .git),
         PersistedRepositoryEntry(path: "/tmp/folder/../folder", kind: .plain),
       ])
@@ -68,7 +69,7 @@ struct RepositoryPersistenceClientTests {
 
     #expect(
       result == [
-        PersistedRepositoryEntry(path: "/tmp/repo-a", kind: .git),
+        PersistedRepositoryEntry(path: "/tmp/repo-a", kind: .git, bookmarkData: bookmark),
         PersistedRepositoryEntry(path: "/tmp/folder", kind: .plain),
       ]
     )
@@ -107,6 +108,23 @@ struct RepositoryPersistenceClientTests {
       result == [
         PersistedRepositoryEntry(path: "/tmp/repo-a", kind: .git),
         PersistedRepositoryEntry(path: "/tmp/repo-b", kind: .git),
+      ]
+    )
+  }
+
+  @Test func repositoryEntryNormalizerPreservesBookmarkDataAcrossDuplicates() {
+    let bookmark = Data("repo".utf8)
+
+    let result = RepositoryEntryNormalizer.normalize([
+      PersistedRepositoryEntry(path: "/tmp/repo", kind: .plain),
+      PersistedRepositoryEntry(path: "/tmp/repo/../repo", kind: .git, bookmarkData: bookmark),
+      PersistedRepositoryEntry(path: "/tmp/plain", kind: .plain),
+    ])
+
+    #expect(
+      result == [
+        PersistedRepositoryEntry(path: "/tmp/repo", kind: .git, bookmarkData: bookmark),
+        PersistedRepositoryEntry(path: "/tmp/plain", kind: .plain),
       ]
     )
   }

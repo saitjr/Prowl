@@ -340,6 +340,7 @@ struct RepositoriesFeature {
   @Dependency(GitClientDependency.self) var gitClient
   @Dependency(GithubCLIClient.self) var githubCLI
   @Dependency(GithubIntegrationClient.self) var githubIntegration
+  @Dependency(RepositoryBookmarkClient.self) var repositoryBookmarkClient
   @Dependency(RepositoryPersistenceClient.self) var repositoryPersistence
   @Dependency(ShellClient.self) var shellClient
   @Dependency(\.uuid) var uuid
@@ -879,24 +880,66 @@ struct RepositoriesFeature {
             switch entry.kind {
             case .plain:
               if normalizedRepoRoot == normalizedPath {
-                return (index, PersistedRepositoryEntry(path: normalizedPath, kind: .git))
+                return (
+                  index,
+                  PersistedRepositoryEntry(
+                    path: normalizedPath,
+                    kind: .git,
+                    bookmarkData: entry.bookmarkData
+                  )
+                )
               }
-              return (index, PersistedRepositoryEntry(path: normalizedPath, kind: .plain))
+              return (
+                index,
+                PersistedRepositoryEntry(
+                  path: normalizedPath,
+                  kind: .plain,
+                  bookmarkData: entry.bookmarkData
+                )
+              )
             case .git:
               if normalizedRepoRoot == normalizedPath {
-                return (index, PersistedRepositoryEntry(path: normalizedPath, kind: .git))
+                return (
+                  index,
+                  PersistedRepositoryEntry(
+                    path: normalizedPath,
+                    kind: .git,
+                    bookmarkData: entry.bookmarkData
+                  )
+                )
               }
-              return (index, PersistedRepositoryEntry(path: normalizedPath, kind: .plain))
+              return (
+                index,
+                PersistedRepositoryEntry(
+                  path: normalizedPath,
+                  kind: .plain,
+                  bookmarkData: entry.bookmarkData
+                )
+              )
             }
           } catch {
             if entry.kind == .git,
               Self.isNotGitRepositoryError(error),
               FileManager.default.fileExists(atPath: normalizedPath)
             {
-              return (index, PersistedRepositoryEntry(path: normalizedPath, kind: .plain))
+              return (
+                index,
+                PersistedRepositoryEntry(
+                  path: normalizedPath,
+                  kind: .plain,
+                  bookmarkData: entry.bookmarkData
+                )
+              )
             }
           }
-          return (index, PersistedRepositoryEntry(path: normalizedPath, kind: entry.kind))
+          return (
+            index,
+            PersistedRepositoryEntry(
+              path: normalizedPath,
+              kind: entry.kind,
+              bookmarkData: entry.bookmarkData
+            )
+          )
         }
       }
 

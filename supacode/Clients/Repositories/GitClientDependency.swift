@@ -41,49 +41,134 @@ struct GitClientDependency: Sendable {
 
 extension GitClientDependency: DependencyKey {
   static let liveValue = GitClientDependency(
-    repoRoot: { try await GitClient().repoRoot(for: $0) },
-    worktrees: { try await GitClient().worktrees(for: $0) },
-    pruneWorktrees: { try await GitClient().pruneWorktrees(for: $0) },
-    localBranchNames: { try await GitClient().localBranchNames(for: $0) },
-    isValidBranchName: { branchName, repoRoot in
-      await GitClient().isValidBranchName(branchName, for: repoRoot)
+    repoRoot: { url in
+      try await RepositorySecurityScopedAccess.withAccess(to: url) { accessibleURL in
+        try await GitClient().repoRoot(for: accessibleURL)
+      }
     },
-    branchRefs: { try await GitClient().branchRefs(for: $0) },
-    defaultRemoteBranchRef: { try await GitClient().defaultRemoteBranchRef(for: $0) },
-    automaticWorktreeBaseRef: { await GitClient().automaticWorktreeBaseRef(for: $0) },
-    ignoredFileCount: { try await GitClient().ignoredFileCount(for: $0) },
-    untrackedFileCount: { try await GitClient().untrackedFileCount(for: $0) },
+    worktrees: { url in
+      try await RepositorySecurityScopedAccess.withAccess(to: url) { accessibleURL in
+        try await GitClient().worktrees(for: accessibleURL)
+      }
+    },
+    pruneWorktrees: { url in
+      try await RepositorySecurityScopedAccess.withAccess(to: url) { accessibleURL in
+        try await GitClient().pruneWorktrees(for: accessibleURL)
+      }
+    },
+    localBranchNames: { url in
+      try await RepositorySecurityScopedAccess.withAccess(to: url) { accessibleURL in
+        try await GitClient().localBranchNames(for: accessibleURL)
+      }
+    },
+    isValidBranchName: { branchName, repoRoot in
+      await RepositorySecurityScopedAccess.withAccess(to: repoRoot) { accessibleURL in
+        await GitClient().isValidBranchName(branchName, for: accessibleURL)
+      }
+    },
+    branchRefs: { url in
+      try await RepositorySecurityScopedAccess.withAccess(to: url) { accessibleURL in
+        try await GitClient().branchRefs(for: accessibleURL)
+      }
+    },
+    defaultRemoteBranchRef: { url in
+      try await RepositorySecurityScopedAccess.withAccess(to: url) { accessibleURL in
+        try await GitClient().defaultRemoteBranchRef(for: accessibleURL)
+      }
+    },
+    automaticWorktreeBaseRef: { url in
+      await RepositorySecurityScopedAccess.withAccess(to: url) { accessibleURL in
+        await GitClient().automaticWorktreeBaseRef(for: accessibleURL)
+      }
+    },
+    ignoredFileCount: { url in
+      try await RepositorySecurityScopedAccess.withAccess(to: url) { accessibleURL in
+        try await GitClient().ignoredFileCount(for: accessibleURL)
+      }
+    },
+    untrackedFileCount: { url in
+      try await RepositorySecurityScopedAccess.withAccess(to: url) { accessibleURL in
+        try await GitClient().untrackedFileCount(for: accessibleURL)
+      }
+    },
     createWorktree: { name, repoRoot, baseDirectory, copyIgnored, copyUntracked, baseRef in
-      try await GitClient().createWorktree(
-        named: name,
-        in: repoRoot,
-        baseDirectory: baseDirectory,
-        copyFiles: (ignored: copyIgnored, untracked: copyUntracked),
-        baseRef: baseRef
-      )
+      try await RepositorySecurityScopedAccess.withAccess(to: repoRoot) { accessibleRepoRoot in
+        try await RepositorySecurityScopedAccess.withAccess(to: baseDirectory) { accessibleBaseDirectory in
+          try await GitClient().createWorktree(
+            named: name,
+            in: accessibleRepoRoot,
+            baseDirectory: accessibleBaseDirectory,
+            copyFiles: (ignored: copyIgnored, untracked: copyUntracked),
+            baseRef: baseRef
+          )
+        }
+      }
     },
     createWorktreeStream: { name, repoRoot, baseDirectory, copyIgnored, copyUntracked, baseRef in
-      GitClient().createWorktreeStream(
-        named: name,
-        in: repoRoot,
-        baseDirectory: baseDirectory,
-        copyFiles: (ignored: copyIgnored, untracked: copyUntracked),
-        baseRef: baseRef
-      )
+      AsyncThrowingStream { continuation in
+        let task = Task {
+          do {
+            try await RepositorySecurityScopedAccess.withAccess(to: repoRoot) { accessibleRepoRoot in
+              try await RepositorySecurityScopedAccess.withAccess(to: baseDirectory) { accessibleBaseDirectory in
+                let stream = GitClient().createWorktreeStream(
+                  named: name,
+                  in: accessibleRepoRoot,
+                  baseDirectory: accessibleBaseDirectory,
+                  copyFiles: (ignored: copyIgnored, untracked: copyUntracked),
+                  baseRef: baseRef
+                )
+                for try await event in stream {
+                  continuation.yield(event)
+                }
+              }
+            }
+            continuation.finish()
+          } catch {
+            continuation.finish(throwing: error)
+          }
+        }
+        continuation.onTermination = { _ in
+          task.cancel()
+        }
+      }
     },
     removeWorktree: { worktree, deleteBranch in
-      try await GitClient().removeWorktree(worktree, deleteBranch: deleteBranch)
+      try await RepositorySecurityScopedAccess.withAccess(to: worktree.workingDirectory) { accessibleWorktreeURL in
+        let accessibleWorktree = Worktree(
+          id: worktree.id,
+          name: worktree.name,
+          detail: worktree.detail,
+          workingDirectory: accessibleWorktreeURL,
+          repositoryRootURL: worktree.repositoryRootURL,
+          createdAt: worktree.createdAt
+        )
+        return try await GitClient().removeWorktree(accessibleWorktree, deleteBranch: deleteBranch)
+      }
     },
     isBareRepository: { repoRoot in
-      try await GitClient().isBareRepository(for: repoRoot)
+      try await RepositorySecurityScopedAccess.withAccess(to: repoRoot) { accessibleURL in
+        try await GitClient().isBareRepository(for: accessibleURL)
+      }
     },
-    branchName: { await GitClient().branchName(for: $0) },
-    lineChanges: { await GitClient().lineChanges(at: $0) },
+    branchName: { url in
+      await RepositorySecurityScopedAccess.withAccess(to: url) { accessibleURL in
+        await GitClient().branchName(for: accessibleURL)
+      }
+    },
+    lineChanges: { url in
+      await RepositorySecurityScopedAccess.withAccess(to: url) { accessibleURL in
+        await GitClient().lineChanges(at: accessibleURL)
+      }
+    },
     renameBranch: { worktreeURL, branchName in
-      try await GitClient().renameBranch(in: worktreeURL, to: branchName)
+      try await RepositorySecurityScopedAccess.withAccess(to: worktreeURL) { accessibleURL in
+        try await GitClient().renameBranch(in: accessibleURL, to: branchName)
+      }
     },
     remoteInfo: { repositoryRoot in
-      await GitClient().remoteInfo(for: repositoryRoot)
+      await RepositorySecurityScopedAccess.withAccess(to: repositoryRoot) { accessibleURL in
+        await GitClient().remoteInfo(for: accessibleURL)
+      }
     }
   )
   static let testValue = liveValue

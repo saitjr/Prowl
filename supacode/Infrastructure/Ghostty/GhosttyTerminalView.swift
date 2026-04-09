@@ -12,5 +12,6 @@ struct GhosttyTerminalView: NSViewRepresentable {
 
   func updateNSView(_ view: GhosttySurfaceScrollView, context: Context) {
     view.pinnedSize = pinnedSize
+    view.ensureSurfaceViewAttached()
   }
 }

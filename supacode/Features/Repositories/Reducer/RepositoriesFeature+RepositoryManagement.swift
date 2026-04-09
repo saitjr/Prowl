@@ -11,6 +11,7 @@ extension RepositoriesFeature {
     case .openRepositories(let urls):
       analyticsClient.capture("repository_added", ["count": urls.count])
       state.alert = nil
+      let repositoryBookmarkClient = repositoryBookmarkClient
       return .run { send in
         let existingEntries = await loadPersistedRepositoryEntries()
         var resolvedEntries: [PersistedRepositoryEntry] = []
@@ -22,7 +23,8 @@ extension RepositoriesFeature {
             resolvedEntries.append(
               PersistedRepositoryEntry(
                 path: root.path(percentEncoded: false),
-                kind: .git
+                kind: .git,
+                bookmarkData: repositoryBookmarkClient.makeBookmarkData(root)
               )
             )
           } catch {
@@ -33,7 +35,8 @@ extension RepositoriesFeature {
               resolvedEntries.append(
                 PersistedRepositoryEntry(
                   path: normalizedPath,
-                  kind: .plain
+                  kind: .plain,
+                  bookmarkData: repositoryBookmarkClient.makeBookmarkData(url.standardizedFileURL)
                 )
               )
             } else {

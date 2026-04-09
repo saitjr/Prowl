@@ -113,6 +113,7 @@ struct SettingsFilePersistenceTests {
     #expect(settings.global.defaultWorktreeBaseDirectoryPath == nil)
     #expect(settings.global.restoreTerminalLayoutOnLaunch == false)
     #expect(settings.global.defaultEditorID == OpenWorktreeAction.automaticSettingsID)
+    #expect(settings.global.hotkeyWindow == .default)
     #expect(settings.repositoryRoots.isEmpty)
     #expect(settings.pinnedWorktreeIDs.isEmpty)
   }

@@ -47,6 +47,8 @@ struct ShortcutKeyTokenResolver {
 
   private func specialKeyToken(for keyCode: UInt16) -> String? {
     switch keyCode {
+    case UInt16(kVK_Space):
+      return "space"
     case 36, 76:
       return "return"
     case 123:
