@@ -10,7 +10,8 @@ struct HotkeyWindowLayoutTests {
       isEnabled: true,
       hotkey: nil,
       widthRatio: 1,
-      heightRatio: 2.0 / 3.0
+      heightRatio: 2.0 / 3.0,
+      hideOnApplicationDeactivate: true
     )
 
     let frame = HotkeyWindowFrameCalculator.frame(
@@ -97,13 +98,28 @@ struct HotkeyWindowLayoutTests {
   @Test func dismissalPlannerKeepsHotkeyWindowVisibleWhileSheetIsAttached() {
     #expect(
       HotkeyWindowDismissalPlanner.shouldDismissWhenWindowResigns(
-        hasAttachedSheet: true
+        hasAttachedSheet: true,
+        hideOnApplicationDeactivate: true
       ) == false
+    )
+  }
+
+  @Test func dismissalPlannerRespectsHideOnApplicationDeactivateSetting() {
+    #expect(
+      HotkeyWindowDismissalPlanner.shouldDismissWhenWindowResigns(
+        hasAttachedSheet: false,
+        hideOnApplicationDeactivate: true
+      )
     )
     #expect(
       HotkeyWindowDismissalPlanner.shouldDismissWhenWindowResigns(
-        hasAttachedSheet: false
-      )
+        hasAttachedSheet: false,
+        hideOnApplicationDeactivate: false
+      ) == false
     )
+  }
+
+  @Test func dismissalPlannerAlwaysDismissesWhenActiveSpaceChanges() {
+    #expect(HotkeyWindowDismissalPlanner.shouldDismissWhenActiveSpaceChanges())
   }
 }

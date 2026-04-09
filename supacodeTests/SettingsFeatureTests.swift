@@ -34,7 +34,8 @@ struct SettingsFeatureTests {
           modifiers: KeybindingModifiers(command: true, control: true)
         ),
         widthRatio: 0.9,
-        heightRatio: 0.6
+        heightRatio: 0.6,
+        hideOnApplicationDeactivate: false
       )
     )
     @Shared(.settingsFile) var settingsFile
@@ -69,7 +70,8 @@ struct SettingsFeatureTests {
           modifiers: KeybindingModifiers(command: true, control: true)
         ),
         widthRatio: 0.9,
-        heightRatio: 0.6
+        heightRatio: 0.6,
+        hideOnApplicationDeactivate: false
       )
     }
     await store.receive(\.delegate.settingsChanged)

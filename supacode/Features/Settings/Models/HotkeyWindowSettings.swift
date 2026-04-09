@@ -8,6 +8,7 @@ nonisolated struct HotkeyWindowSettings: Codable, Equatable, Sendable {
   var hotkey: Keybinding?
   var widthRatio: Double
   var heightRatio: Double
+  var hideOnApplicationDeactivate: Bool
 
   static let `default` = HotkeyWindowSettings(
     isEnabled: false,
@@ -16,19 +17,22 @@ nonisolated struct HotkeyWindowSettings: Codable, Equatable, Sendable {
       modifiers: KeybindingModifiers(command: true, control: true)
     ),
     widthRatio: 1,
-    heightRatio: 2.0 / 3.0
+    heightRatio: 2.0 / 3.0,
+    hideOnApplicationDeactivate: true
   )
 
   init(
     isEnabled: Bool,
     hotkey: Keybinding?,
     widthRatio: Double,
-    heightRatio: Double
+    heightRatio: Double,
+    hideOnApplicationDeactivate: Bool
   ) {
     self.isEnabled = isEnabled
     self.hotkey = hotkey
     self.widthRatio = widthRatio
     self.heightRatio = heightRatio
+    self.hideOnApplicationDeactivate = hideOnApplicationDeactivate
   }
 
   init(from decoder: any Decoder) throws {
@@ -37,6 +41,9 @@ nonisolated struct HotkeyWindowSettings: Codable, Equatable, Sendable {
     hotkey = try container.decodeIfPresent(Keybinding.self, forKey: .hotkey) ?? Self.default.hotkey
     widthRatio = try container.decodeIfPresent(Double.self, forKey: .widthRatio) ?? Self.default.widthRatio
     heightRatio = try container.decodeIfPresent(Double.self, forKey: .heightRatio) ?? Self.default.heightRatio
+    hideOnApplicationDeactivate =
+      try container.decodeIfPresent(Bool.self, forKey: .hideOnApplicationDeactivate)
+      ?? Self.default.hideOnApplicationDeactivate
     self = normalized
   }
 

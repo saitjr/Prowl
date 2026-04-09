@@ -40,6 +40,18 @@ struct HotkeyWindowSettingsView: View {
           }
         }
 
+        Section("Visibility") {
+          Toggle(
+            "Hide when switching apps",
+            isOn: $store.hotkeyWindow.hideOnApplicationDeactivate
+          )
+          .help("When enabled, the hotkey window hides as soon as Prowl loses focus within the current Space")
+
+          Text(visibilitySummary)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+        }
+
         Section("Window Layout") {
           ratioRow(
             title: "Width",
@@ -135,6 +147,13 @@ struct HotkeyWindowSettingsView: View {
     let width = Int((store.hotkeyWindow.widthRatio * 100).rounded())
     let height = Int((store.hotkeyWindow.heightRatio * 100).rounded())
     return "On show, Prowl will resize to \(width)% width and \(height)% height of the active display."
+  }
+
+  private var visibilitySummary: String {
+    if store.hotkeyWindow.hideOnApplicationDeactivate {
+      return "The hotkey window hides when you switch apps or switch Spaces."
+    }
+    return "The hotkey window stays visible when you switch apps in the same Space, and only hides when you switch Spaces or press the hotkey again."
   }
 
   private func ratioRow(

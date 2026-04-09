@@ -60,8 +60,16 @@ nonisolated enum HotkeyWindowDismissalPlanner {
     case hideThenRestore
   }
 
-  static func shouldDismissWhenWindowResigns(hasAttachedSheet: Bool) -> Bool {
-    !hasAttachedSheet
+  static func shouldDismissWhenWindowResigns(
+    hasAttachedSheet: Bool,
+    hideOnApplicationDeactivate: Bool
+  ) -> Bool {
+    guard !hasAttachedSheet else { return false }
+    return hideOnApplicationDeactivate
+  }
+
+  static func shouldDismissWhenActiveSpaceChanges() -> Bool {
+    true
   }
 
   static func restoreOrder(

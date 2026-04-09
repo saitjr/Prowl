@@ -21,10 +21,13 @@ final class HotkeyWindowManager {
   private var snapshot: MainWindowSnapshot?
   private var observedWindow: NSWindow?
   private var notificationObservers: [NSObjectProtocol] = []
+  private var workspaceObserver: NSObjectProtocol?
   private var isTransitioningPresentation = false
   private var isPresentingHotkey = false
 
-  private init() {}
+  private init() {
+    observeActiveSpaceChanges()
+  }
 
   func configure(
     mainWindowProvider: @escaping @MainActor () -> NSWindow?,
@@ -196,11 +199,28 @@ final class HotkeyWindowManager {
     guard !isTransitioningPresentation else { return }
     if let window = observedWindow,
       !HotkeyWindowDismissalPlanner.shouldDismissWhenWindowResigns(
-        hasAttachedSheet: window.attachedSheet != nil
+        hasAttachedSheet: window.attachedSheet != nil,
+        hideOnApplicationDeactivate: settings.hideOnApplicationDeactivate
       )
     {
       return
     }
+    dismissPanel()
+  }
+
+  private func observeActiveSpaceChanges() {
+    workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+      forName: NSWorkspace.activeSpaceDidChangeNotification,
+      object: NSWorkspace.shared,
+      queue: .main
+    ) { [weak self] _ in
+      self?.handleActiveSpaceDidChange()
+    }
+  }
+
+  private func handleActiveSpaceDidChange() {
+    guard isPresentingHotkey else { return }
+    guard HotkeyWindowDismissalPlanner.shouldDismissWhenActiveSpaceChanges() else { return }
     dismissPanel()
   }
 }
