@@ -21,6 +21,9 @@ TEST_DERIVED_DATA_DIR := $(CURRENT_MAKEFILE_DIR)/build/DerivedData/Test
 VERSION ?=
 BUILD ?=
 XCODEBUILD_FLAGS ?=
+MISE_ZIG = mise exec zig@0.15.2 --
+MISE_XCSIFT = mise exec github:ldomaradzki/xcsift@1.1.3 --
+MISE_SWIFTLINT = mise exec swiftlint@0.62.2 --
 .DEFAULT_GOAL := help
 .PHONY: build-ghostty-xcframework ensure-ghostty sync-ghostty _check-ghostty-hash _record-ghostty-hash build-app build-cli build-cli-release embed-cli-debug embed-cli run-app install-dev-build install-release archive export-archive format lint check test test-cli-smoke test-cli-integration bump-version bump-and-release log-stream
 
@@ -34,7 +37,7 @@ build-ghostty-xcframework: $(GHOSTTY_BUILD_STAMP) # Build ghostty framework
 
 # Internal: actually rebuild ghostty.
 $(GHOSTTY_BUILD_STAMP):
-	@cd $(CURRENT_MAKEFILE_DIR)/ThirdParty/ghostty && mise exec -- zig build -Doptimize=ReleaseFast -Demit-xcframework=true -Dsentry=false
+	@cd $(CURRENT_MAKEFILE_DIR)/ThirdParty/ghostty && $(MISE_ZIG) zig build -Doptimize=ReleaseFast -Demit-xcframework=true -Dsentry=false
 	rsync -a ThirdParty/ghostty/macos/GhosttyKit.xcframework Frameworks
 	@src="$(CURRENT_MAKEFILE_DIR)/ThirdParty/ghostty/zig-out/share/ghostty"; \
 	dst="$(GHOSTTY_RESOURCE_PATH)"; \
@@ -85,7 +88,7 @@ sync-ghostty: # Force sync GhosttyKit to current submodule HEAD (always rebuilds
 	@echo "Done. Xcode module cache cleared for fresh compilation."
 
 build-app: ensure-ghostty embed-cli-debug # Build the macOS app (Debug)
-	bash -o pipefail -c 'xcodebuild -project supacode.xcodeproj -scheme supacode -configuration Debug -derivedDataPath $(DEBUG_DERIVED_DATA_DIR) build -skipMacroValidation -clonedSourcePackagesDirPath $(SPM_CACHE_DIR) 2>&1 | mise exec -- xcsift -qw --format toon'
+	bash -o pipefail -c 'xcodebuild -project supacode.xcodeproj -scheme supacode -configuration Debug -derivedDataPath $(DEBUG_DERIVED_DATA_DIR) build -skipMacroValidation -clonedSourcePackagesDirPath $(SPM_CACHE_DIR) 2>&1 | $(MISE_XCSIFT) xcsift -qw --format toon'
 
 sync-cli-version: # Sync app MARKETING_VERSION into ProwlCLIShared/ProwlVersion.swift
 	@version="$$(/usr/bin/awk -F' = ' '/MARKETING_VERSION = [0-9.]*;/{gsub(/;/,"",$$2);print $$2; exit}' \
@@ -264,10 +267,10 @@ install-release: build-ghostty-xcframework # Build Release, sign locally, instal
 	echo "installed $$DST (Release build, locally signed)"
 
 archive: build-ghostty-xcframework embed-cli # Archive Release build for distribution
-	bash -o pipefail -c 'xcodebuild -project supacode.xcodeproj -scheme supacode -configuration Release -archivePath build/supacode.xcarchive archive CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="$$APPLE_TEAM_ID" CODE_SIGN_IDENTITY="$$DEVELOPER_ID_IDENTITY_SHA" OTHER_CODE_SIGN_FLAGS="--timestamp" -skipMacroValidation -clonedSourcePackagesDirPath $(SPM_CACHE_DIR) $(XCODEBUILD_FLAGS) 2>&1 | mise exec -- xcsift -qw --format toon'
+	bash -o pipefail -c 'xcodebuild -project supacode.xcodeproj -scheme supacode -configuration Release -archivePath build/supacode.xcarchive archive CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="$$APPLE_TEAM_ID" CODE_SIGN_IDENTITY="$$DEVELOPER_ID_IDENTITY_SHA" OTHER_CODE_SIGN_FLAGS="--timestamp" -skipMacroValidation -clonedSourcePackagesDirPath $(SPM_CACHE_DIR) $(XCODEBUILD_FLAGS) 2>&1 | $(MISE_XCSIFT) xcsift -qw --format toon'
 
 export-archive: # Export xarchive
-	bash -o pipefail -c 'xcodebuild -exportArchive -archivePath build/supacode.xcarchive -exportPath build/export -exportOptionsPlist build/ExportOptions.plist 2>&1 | mise exec -- xcsift -qw --format toon'
+	bash -o pipefail -c 'xcodebuild -exportArchive -archivePath build/supacode.xcarchive -exportPath build/export -exportOptionsPlist build/ExportOptions.plist 2>&1 | $(MISE_XCSIFT) xcsift -qw --format toon'
 
 test: ensure-ghostty
 	@set -euo pipefail; \
@@ -275,7 +278,7 @@ test: ensure-ghostty
 	mkdir -p "$$(dirname "$$result_bundle")"; \
 	rm -rf "$$result_bundle"; \
 	set +e; \
-	xcodebuild test -project supacode.xcodeproj -scheme supacode -destination "platform=macOS" -derivedDataPath $(TEST_DERIVED_DATA_DIR) -resultBundlePath "$$result_bundle" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" -skipMacroValidation -clonedSourcePackagesDirPath $(SPM_CACHE_DIR) 2>&1 | mise exec -- xcsift -w --format toon; \
+	xcodebuild test -project supacode.xcodeproj -scheme supacode -destination "platform=macOS" -derivedDataPath $(TEST_DERIVED_DATA_DIR) -resultBundlePath "$$result_bundle" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" -skipMacroValidation -clonedSourcePackagesDirPath $(SPM_CACHE_DIR) 2>&1 | $(MISE_XCSIFT) xcsift -w --format toon; \
 	xcodebuild_status=$${PIPESTATUS[0]}; \
 	set -e; \
 	if [ "$$xcodebuild_status" -ne 0 ]; then \
@@ -301,8 +304,8 @@ format: # Format code with swift-format (local only)
 	swift-format -p --in-place --recursive --configuration ./.swift-format.json supacode supacodeTests
 
 lint: # Lint code with swiftlint
-	mise exec -- swiftlint --fix --quiet
-	mise exec -- swiftlint lint --quiet --config .swiftlint.yml
+	$(MISE_SWIFTLINT) swiftlint --fix --quiet
+	$(MISE_SWIFTLINT) swiftlint lint --quiet --config .swiftlint.yml
 
 check: format lint # Format and lint
 

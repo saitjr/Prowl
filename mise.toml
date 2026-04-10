@@ -1,5 +1,5 @@
 [tools]
 zig = "0.15.2"
-swiftlint = "latest"
-"github:ldomaradzki/xcsift" = "latest"
-"npm:create-dmg" = "latest"
+swiftlint = "0.62.2"
+"github:ldomaradzki/xcsift" = "1.1.3"
+"npm:create-dmg" = "8.1.0"
