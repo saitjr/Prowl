@@ -3,6 +3,11 @@ import Foundation
 
 @MainActor
 final class HotkeyWindowManager {
+  private struct NotificationObserver {
+    let center: NotificationCenter
+    let token: NSObjectProtocol
+  }
+
   private struct MainWindowSnapshot {
     let frame: CGRect
     let level: NSWindow.Level
@@ -12,6 +17,7 @@ final class HotkeyWindowManager {
 
   static let shared = HotkeyWindowManager()
 
+  private let workspaceNotificationCenter: NotificationCenter
   private let logger = SupaLogger("HotkeyWindow")
   private let hotKeyMonitor = GlobalHotKeyMonitor()
   private var mainWindowProvider: @MainActor () -> NSWindow? = {
@@ -19,12 +25,15 @@ final class HotkeyWindowManager {
   }
   private var settings = HotkeyWindowSettings.default
   private var snapshot: MainWindowSnapshot?
-  private var observedWindow: NSWindow?
-  private var notificationObservers: [NSObjectProtocol] = []
+  private var notificationObservers: [NotificationObserver] = []
   private var isTransitioningPresentation = false
   private var isPresentingHotkey = false
 
-  private init() {}
+  private init(
+    workspaceNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter
+  ) {
+    self.workspaceNotificationCenter = workspaceNotificationCenter
+  }
 
   func configure(
     mainWindowProvider: @escaping @MainActor () -> NSWindow?,
@@ -74,7 +83,7 @@ final class HotkeyWindowManager {
       collectionBehavior: window.collectionBehavior,
       animationBehavior: window.animationBehavior
     )
-    observe(window: window)
+    observePresentationLifecycle()
 
     isTransitioningPresentation = true
     isPresentingHotkey = true
@@ -162,45 +171,34 @@ final class HotkeyWindowManager {
     return screens[targetIndex]
   }
 
-  private func observe(window: NSWindow) {
-    guard observedWindow !== window else { return }
-    clearWindowObservation()
-    observedWindow = window
-    let center = NotificationCenter.default
+  private func observePresentationLifecycle() {
+    guard notificationObservers.isEmpty else { return }
     notificationObservers.append(
-      center.addObserver(
-        forName: NSWindow.didResignKeyNotification,
-        object: window,
-        queue: .main
-      ) { [weak self] _ in
-        self?.handleWindowResign()
-      })
-    notificationObservers.append(
-      center.addObserver(
-        forName: NSWindow.didResignMainNotification,
-        object: window,
-        queue: .main
-      ) { [weak self] _ in
-        self?.handleWindowResign()
-      })
+      NotificationObserver(
+        center: workspaceNotificationCenter,
+        token: workspaceNotificationCenter.addObserver(
+          forName: NSWorkspace.activeSpaceDidChangeNotification,
+          object: nil,
+          queue: .main
+        ) { [weak self] _ in
+          MainActor.assumeIsolated {
+            self?.handleActiveSpaceDidChange()
+          }
+        }
+      )
+    )
   }
 
   private func clearWindowObservation() {
-    let center = NotificationCenter.default
-    notificationObservers.forEach(center.removeObserver)
+    notificationObservers.forEach { observer in
+      observer.center.removeObserver(observer.token)
+    }
     notificationObservers.removeAll()
-    observedWindow = nil
   }
 
-  private func handleWindowResign() {
+  private func handleActiveSpaceDidChange() {
     guard !isTransitioningPresentation else { return }
-    if let window = observedWindow,
-      !HotkeyWindowDismissalPlanner.shouldDismissWhenWindowResigns(
-        hasAttachedSheet: window.attachedSheet != nil
-      )
-    {
-      return
-    }
+    guard HotkeyWindowDismissalPlanner.shouldDismissWhenActiveSpaceChanges() else { return }
     dismissPanel()
   }
 }
