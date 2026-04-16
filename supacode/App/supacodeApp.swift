@@ -134,6 +134,7 @@ struct SupacodeApp: App {
   @MainActor init() {
     NSWindow.allowsAutomaticWindowTabbing = false
     UserDefaults.standard.set(200, forKey: "NSInitialToolTipDelay")
+    WindowFrameAutosaveSanitizer.sanitizeStoredFrames()
     @Shared(.settingsFile) var settingsFile
     let initialSettings = settingsFile.global
     let initialResolvedKeybindings = KeybindingResolver.resolve(

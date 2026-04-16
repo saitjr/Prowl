@@ -21,6 +21,7 @@ final class WindowTabbingView: NSView, NSWindowDelegate {
     guard let window else { return }
     window.tabbingMode = .disallowed
     window.identifier = NSUserInterfaceItemIdentifier("main")
+    WindowFrameAutosaveSanitizer.sanitizeAttachedWindow(window)
     if window.delegate !== self {
       window.delegate = self
     }
@@ -29,5 +30,15 @@ final class WindowTabbingView: NSView, NSWindowDelegate {
   func windowShouldClose(_ sender: NSWindow) -> Bool {
     sender.orderOut(nil)
     return false
+  }
+
+  func windowDidResize(_ notification: Notification) {
+    guard let window else { return }
+    WindowFrameAutosaveSanitizer.sanitizeAttachedWindow(window)
+  }
+
+  func windowDidChangeScreen(_ notification: Notification) {
+    guard let window else { return }
+    WindowFrameAutosaveSanitizer.sanitizeAttachedWindow(window)
   }
 }
