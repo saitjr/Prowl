@@ -1,13 +1,19 @@
 import Foundation
 
 nonisolated struct HotkeyWindowSettings: Codable, Equatable, Sendable {
+  static let defaultMinimumWidth = 756.0
+  static let defaultMinimumHeight = 471.0
   static let widthRatioRange = 0.3 ... 1.0
   static let heightRatioRange = 0.25 ... 1.0
+  static let minimumWidthRange = defaultMinimumWidth ... 2400.0
+  static let minimumHeightRange = defaultMinimumHeight ... 1600.0
 
   var isEnabled: Bool
   var hotkey: Keybinding?
   var widthRatio: Double
   var heightRatio: Double
+  var minimumWidth: Double
+  var minimumHeight: Double
 
   static let `default` = HotkeyWindowSettings(
     isEnabled: false,
@@ -16,19 +22,25 @@ nonisolated struct HotkeyWindowSettings: Codable, Equatable, Sendable {
       modifiers: KeybindingModifiers(command: true, control: true)
     ),
     widthRatio: 1,
-    heightRatio: 2.0 / 3.0
+    heightRatio: 2.0 / 3.0,
+    minimumWidth: defaultMinimumWidth,
+    minimumHeight: defaultMinimumHeight
   )
 
   init(
     isEnabled: Bool,
     hotkey: Keybinding?,
     widthRatio: Double,
-    heightRatio: Double
+    heightRatio: Double,
+    minimumWidth: Double = Self.defaultMinimumWidth,
+    minimumHeight: Double = Self.defaultMinimumHeight
   ) {
     self.isEnabled = isEnabled
     self.hotkey = hotkey
     self.widthRatio = widthRatio
     self.heightRatio = heightRatio
+    self.minimumWidth = minimumWidth
+    self.minimumHeight = minimumHeight
   }
 
   init(from decoder: any Decoder) throws {
@@ -37,6 +49,8 @@ nonisolated struct HotkeyWindowSettings: Codable, Equatable, Sendable {
     hotkey = try container.decodeIfPresent(Keybinding.self, forKey: .hotkey) ?? Self.default.hotkey
     widthRatio = try container.decodeIfPresent(Double.self, forKey: .widthRatio) ?? Self.default.widthRatio
     heightRatio = try container.decodeIfPresent(Double.self, forKey: .heightRatio) ?? Self.default.heightRatio
+    minimumWidth = try container.decodeIfPresent(Double.self, forKey: .minimumWidth) ?? Self.default.minimumWidth
+    minimumHeight = try container.decodeIfPresent(Double.self, forKey: .minimumHeight) ?? Self.default.minimumHeight
     self = normalized
   }
 
@@ -44,6 +58,8 @@ nonisolated struct HotkeyWindowSettings: Codable, Equatable, Sendable {
     var copy = self
     copy.widthRatio = widthRatio.clamped(to: Self.widthRatioRange)
     copy.heightRatio = heightRatio.clamped(to: Self.heightRatioRange)
+    copy.minimumWidth = minimumWidth.clamped(to: Self.minimumWidthRange)
+    copy.minimumHeight = minimumHeight.clamped(to: Self.minimumHeightRange)
     return copy
   }
 }

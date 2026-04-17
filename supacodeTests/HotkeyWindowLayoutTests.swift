@@ -24,6 +24,48 @@ struct HotkeyWindowLayoutTests {
     #expect(frame.height == 600)
   }
 
+  @Test func frameUsesConfiguredMinimumSizeWhenVisibleFrameIsAbnormal() {
+    let settings = HotkeyWindowSettings(
+      isEnabled: true,
+      hotkey: nil,
+      widthRatio: 0.3,
+      heightRatio: 0.25,
+      minimumWidth: 756,
+      minimumHeight: 471
+    )
+
+    let frame = HotkeyWindowFrameCalculator.frame(
+      in: CGRect(x: 0, y: 0, width: 0, height: 0),
+      retryingWith: CGRect(x: 0, y: 0, width: 1512, height: 942),
+      settings: settings
+    )
+
+    #expect(frame.origin.x == 378)
+    #expect(frame.origin.y == 0)
+    #expect(frame.width == 756)
+    #expect(frame.height == 471)
+  }
+
+  @Test func frameFallsBackToFourteenInchHalfScreenWhenAllDisplayMetricsAreInvalid() {
+    let settings = HotkeyWindowSettings(
+      isEnabled: true,
+      hotkey: nil,
+      widthRatio: 0.3,
+      heightRatio: 0.25
+    )
+
+    let frame = HotkeyWindowFrameCalculator.frame(
+      in: CGRect(x: 0, y: 0, width: 0, height: 0),
+      retryingWith: CGRect(x: 0, y: 0, width: 0, height: 0),
+      settings: settings
+    )
+
+    #expect(frame.origin.x == 0)
+    #expect(frame.origin.y == 0)
+    #expect(frame.width == 756)
+    #expect(frame.height == 471)
+  }
+
   @Test func selectorPrefersScreenContainingMouse() {
     let screens = [
       HotkeyWindowScreenSnapshot(

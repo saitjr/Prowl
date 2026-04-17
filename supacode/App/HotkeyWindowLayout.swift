@@ -39,18 +39,92 @@ nonisolated enum HotkeyWindowScreenSelector {
 }
 
 nonisolated enum HotkeyWindowFrameCalculator {
+  private static let minimumUsableFrameWidth: CGFloat = 320
+  private static let minimumUsableFrameHeight: CGFloat = 240
+
   static func frame(
     in availableFrame: CGRect,
+    retryingWith retryFrame: CGRect? = nil,
     settings: HotkeyWindowSettings
   ) -> CGRect {
     let normalized = settings.normalized
-    let width = availableFrame.width * normalized.widthRatio
-    let height = availableFrame.height * normalized.heightRatio
+    let resolvedFrame = resolvedAvailableFrame(
+      availableFrame,
+      retryingWith: retryFrame,
+      settings: normalized
+    )
+    let width = clampedDimension(
+      preferred: resolvedFrame.width * normalized.widthRatio,
+      minimum: normalized.minimumWidth,
+      container: resolvedFrame.width
+    )
+    let height = clampedDimension(
+      preferred: resolvedFrame.height * normalized.heightRatio,
+      minimum: normalized.minimumHeight,
+      container: resolvedFrame.height
+    )
     let origin = CGPoint(
-      x: availableFrame.midX - width / 2,
-      y: availableFrame.minY
+      x: resolvedFrame.midX - width / 2,
+      y: resolvedFrame.minY
     )
     return CGRect(origin: origin, size: CGSize(width: width, height: height)).integral
+  }
+
+  private static func resolvedAvailableFrame(
+    _ availableFrame: CGRect,
+    retryingWith retryFrame: CGRect?,
+    settings: HotkeyWindowSettings
+  ) -> CGRect {
+    if isUsable(frame: availableFrame) {
+      return availableFrame
+    }
+
+    if let retryFrame, isUsable(frame: retryFrame) {
+      return retryFrame
+    }
+
+    let origin = fallbackOrigin(primary: availableFrame, retry: retryFrame)
+    return CGRect(
+      origin: origin,
+      size: CGSize(
+        width: max(settings.minimumWidth, HotkeyWindowSettings.defaultMinimumWidth),
+        height: max(settings.minimumHeight, HotkeyWindowSettings.defaultMinimumHeight)
+      )
+    )
+  }
+
+  private static func isUsable(frame: CGRect) -> Bool {
+    guard
+      frame.minX.isFinite,
+      frame.minY.isFinite,
+      frame.width.isFinite,
+      frame.height.isFinite
+    else {
+      return false
+    }
+
+    return frame.width >= minimumUsableFrameWidth && frame.height >= minimumUsableFrameHeight
+  }
+
+  private static func fallbackOrigin(primary: CGRect, retry: CGRect?) -> CGPoint {
+    if primary.minX.isFinite, primary.minY.isFinite {
+      return CGPoint(x: primary.minX, y: primary.minY)
+    }
+    if let retry, retry.minX.isFinite, retry.minY.isFinite {
+      return CGPoint(x: retry.minX, y: retry.minY)
+    }
+    return .zero
+  }
+
+  private static func clampedDimension(
+    preferred: CGFloat,
+    minimum: Double,
+    container: CGFloat
+  ) -> CGFloat {
+    guard container.isFinite, container > 0 else {
+      return CGFloat(minimum)
+    }
+    return min(max(preferred, CGFloat(minimum)), container)
   }
 }
 

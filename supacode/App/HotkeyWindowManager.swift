@@ -13,6 +13,7 @@ final class HotkeyWindowManager {
     let level: NSWindow.Level
     let collectionBehavior: NSWindow.CollectionBehavior
     let animationBehavior: NSWindow.AnimationBehavior
+    let minSize: CGSize
   }
 
   static let shared = HotkeyWindowManager()
@@ -81,7 +82,8 @@ final class HotkeyWindowManager {
       frame: snapshot?.frame ?? window.frame,
       level: window.level,
       collectionBehavior: window.collectionBehavior,
-      animationBehavior: window.animationBehavior
+      animationBehavior: window.animationBehavior,
+      minSize: window.minSize
     )
     observePresentationLifecycle()
 
@@ -134,6 +136,7 @@ final class HotkeyWindowManager {
       window.level = snapshot.level
       window.collectionBehavior = snapshot.collectionBehavior
       window.animationBehavior = snapshot.animationBehavior
+      window.minSize = snapshot.minSize
       window.setFrame(snapshot.frame, display: false)
     } else {
       window.level = .normal
@@ -144,8 +147,12 @@ final class HotkeyWindowManager {
 
   private func layout(window: NSWindow) {
     guard let screen = targetScreen(fallbackWindowFrame: window.frame) else { return }
+    let minimumWidth = min(settings.minimumWidth, screen.frame.width)
+    let minimumHeight = min(settings.minimumHeight, screen.frame.height)
+    window.minSize = CGSize(width: minimumWidth, height: minimumHeight)
     let frame = HotkeyWindowFrameCalculator.frame(
       in: screen.visibleFrame,
+      retryingWith: screen.frame,
       settings: settings
     )
     window.setFrame(frame, display: true, animate: false)
