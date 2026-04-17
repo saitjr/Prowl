@@ -6,6 +6,7 @@ import QuartzCore
 import SwiftUI
 
 private let surfaceLogger = SupaLogger("Surface")
+private let surfaceHostLogger = SupaLogger("SurfaceHost")
 
 final class GhosttySurfaceView: NSView, Identifiable {
   struct OcclusionState {
@@ -99,11 +100,17 @@ final class GhosttySurfaceView: NSView, Identifiable {
   private var debugID: String {
     String(id.uuidString.prefix(8))
   }
+  var debugIdentifierForLogging: String {
+    debugID
+  }
   let bridge: GhosttySurfaceBridge
   private(set) var surface: ghostty_surface_t?
   private var surfaceRef: GhosttyRuntime.SurfaceReference?
   private let workingDirectoryCString: UnsafeMutablePointer<CChar>?
   private let initialInputCString: UnsafeMutablePointer<CChar>?
+  private let envVarCStrings: [UnsafeMutablePointer<CChar>]
+  private let envVarEntries: UnsafeMutablePointer<ghostty_env_var_s>?
+  private let envVarCount: Int
   private let fontSize: Float32
   private let context: ghostty_surface_context_e
   private let skipsSurfaceCreationForTesting: Bool
@@ -121,6 +128,7 @@ final class GhosttySurfaceView: NSView, Identifiable {
   private var lastSurfaceFocus: Bool?
   private var eventMonitor: Any?
   private var notificationObservers: [NSObjectProtocol] = []
+  private var workspaceObservers: [NSObjectProtocol] = []
   private var prevPressureStage: Int = 0
   private var isBackgroundOpaqueOverride = false
   private var suppressNextLeftMouseUp = false
@@ -218,6 +226,7 @@ final class GhosttySurfaceView: NSView, Identifiable {
     initialInput: String? = nil,
     fontSize: Float32? = nil,
     context: ghostty_surface_context_e,
+    environment: [String: String] = [:],
     skipsSurfaceCreationForTesting: Bool = false
   ) {
     self.runtime = runtime
@@ -238,6 +247,32 @@ final class GhosttySurfaceView: NSView, Identifiable {
     } else {
       initialInputCString = nil
     }
+    let sortedEnv = environment.sorted { $0.key < $1.key }
+    var allocatedStrings: [UnsafeMutablePointer<CChar>] = []
+    allocatedStrings.reserveCapacity(sortedEnv.count * 2)
+    for (key, value) in sortedEnv {
+      guard let keyPtr = key.withCString({ strdup($0) }),
+        let valuePtr = value.withCString({ strdup($0) })
+      else { continue }
+      allocatedStrings.append(keyPtr)
+      allocatedStrings.append(valuePtr)
+    }
+    envVarCStrings = allocatedStrings
+    let pairCount = allocatedStrings.count / 2
+    if pairCount > 0 {
+      let entries = UnsafeMutablePointer<ghostty_env_var_s>.allocate(capacity: pairCount)
+      for index in 0..<pairCount {
+        entries[index] = ghostty_env_var_s(
+          key: UnsafePointer(allocatedStrings[index * 2]),
+          value: UnsafePointer(allocatedStrings[index * 2 + 1])
+        )
+      }
+      envVarEntries = entries
+      envVarCount = pairCount
+    } else {
+      envVarEntries = nil
+      envVarCount = 0
+    }
     super.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
     wantsLayer = true
     bridge.surfaceView = self
@@ -248,6 +283,7 @@ final class GhosttySurfaceView: NSView, Identifiable {
       }
     }
     registerForDraggedTypes(Array(Self.dropTypes))
+    registerWorkspaceObservers()
 
     eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyUp, .leftMouseDown]) {
       [weak self] event in
@@ -264,6 +300,7 @@ final class GhosttySurfaceView: NSView, Identifiable {
       NSEvent.removeMonitor(eventMonitor)
     }
     clearNotificationObservers()
+    clearWorkspaceObservers()
     let id = ObjectIdentifier(self)
     MainActor.assumeIsolated {
       SecureInput.shared.removeScoped(id)
@@ -274,6 +311,12 @@ final class GhosttySurfaceView: NSView, Identifiable {
     }
     if let initialInputCString {
       free(initialInputCString)
+    }
+    if let envVarEntries {
+      envVarEntries.deallocate()
+    }
+    for pointer in envVarCStrings {
+      free(pointer)
     }
   }
 
@@ -358,6 +401,50 @@ final class GhosttySurfaceView: NSView, Identifiable {
       })
   }
 
+  private func registerWorkspaceObservers() {
+    let center = NSWorkspace.shared.notificationCenter
+    workspaceObservers.append(
+      center.addObserver(
+        forName: NSWorkspace.willSleepNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        Task { @MainActor [weak self] in
+          self?.logLifecycleState("workspaceWillSleep")
+        }
+      })
+    workspaceObservers.append(
+      center.addObserver(
+        forName: NSWorkspace.didWakeNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        Task { @MainActor [weak self] in
+          self?.logLifecycleState("workspaceDidWake")
+        }
+      })
+    workspaceObservers.append(
+      center.addObserver(
+        forName: NSWorkspace.screensDidSleepNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        Task { @MainActor [weak self] in
+          self?.logLifecycleState("screensDidSleep")
+        }
+      })
+    workspaceObservers.append(
+      center.addObserver(
+        forName: NSWorkspace.screensDidWakeNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        Task { @MainActor [weak self] in
+          self?.logLifecycleState("screensDidWake")
+        }
+      })
+  }
+
   private func windowDidChangeScreen() {
     guard let surface, let screen = window?.screen else { return }
     let displayID =
@@ -376,6 +463,14 @@ final class GhosttySurfaceView: NSView, Identifiable {
     notificationObservers.removeAll()
   }
 
+  private func clearWorkspaceObservers() {
+    let center = NSWorkspace.shared.notificationCenter
+    for observer in workspaceObservers {
+      center.removeObserver(observer)
+    }
+    workspaceObservers.removeAll()
+  }
+
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
     if window == nil {
@@ -387,12 +482,28 @@ final class GhosttySurfaceView: NSView, Identifiable {
     updateContentScale()
     updateSurfaceSize()
     applyWindowBackgroundAppearance()
+    logLifecycleState("viewDidMoveToWindow")
     handleAttachmentChange()
   }
 
   override func viewDidMoveToSuperview() {
     super.viewDidMoveToSuperview()
+    logLifecycleState("viewDidMoveToSuperview")
     handleAttachmentChange()
+  }
+
+  override func viewWillMove(toSuperview newSuperview: NSView?) {
+    if newSuperview == nil {
+      logDetachIntent(event: "viewWillMoveToSuperview")
+    }
+    super.viewWillMove(toSuperview: newSuperview)
+  }
+
+  override func viewWillMove(toWindow newWindow: NSWindow?) {
+    if newWindow == nil {
+      logDetachIntent(event: "viewWillMoveToWindow")
+    }
+    super.viewWillMove(toWindow: newWindow)
   }
 
   override func viewDidChangeBackingProperties() {
@@ -820,6 +931,15 @@ final class GhosttySurfaceView: NSView, Identifiable {
 
   override func scrollWheel(with event: NSEvent) {
     guard let surface else { return }
+
+    // In canvas mode, if the terminal has no scrollback content the scroll
+    // event is useless here. Let it bubble up to the canvas container so
+    // two-finger gestures pan the canvas instead of being swallowed.
+    if scrollWrapper?.hostKind == .canvas, !hasScrollbackContent {
+      scrollWrapper?.forwardScrollToParent(with: event)
+      return
+    }
+
     var scrollX = event.scrollingDeltaX
     var scrollY = event.scrollingDeltaY
     if event.hasPreciseScrollingDeltas {
@@ -827,6 +947,11 @@ final class GhosttySurfaceView: NSView, Identifiable {
       scrollY *= 2
     }
     ghostty_surface_mouse_scroll(surface, scrollX, scrollY, scrollMods(for: event))
+  }
+
+  private var hasScrollbackContent: Bool {
+    guard let lastScrollbar else { return false }
+    return lastScrollbar.total > lastScrollbar.length
   }
 
   override func pressureChange(with event: NSEvent) {
@@ -894,6 +1019,7 @@ final class GhosttySurfaceView: NSView, Identifiable {
   }
 
   func updateSurfaceSize() {
+    resumeDeferredOcclusionIfNeeded()
     guard let surface else { return }
     // When pinnedSize is set (canvas mode), convertToBacking() includes the
     // .scaleEffect() layer transform, producing scale-dependent backing sizes.
@@ -983,6 +1109,10 @@ final class GhosttySurfaceView: NSView, Identifiable {
     config.working_directory = workingDirectoryCString.map { UnsafePointer($0) }
     config.initial_input = initialInputCString.map { UnsafePointer($0) }
     config.context = context
+    if let envVarEntries, envVarCount > 0 {
+      config.env_vars = envVarEntries
+      config.env_var_count = envVarCount
+    }
     surface = ghostty_surface_new(app, &config)
     bridge.surface = surface
     occlusionState.reset()
@@ -1009,6 +1139,14 @@ final class GhosttySurfaceView: NSView, Identifiable {
   func setOcclusion(_ visible: Bool) {
     guard let surface else {
       guard skipsSurfaceCreationForTesting else { return }
+      // Occluding (pausing render) is always safe, even without a view
+      // hierarchy. This handles restored surfaces that haven't been attached
+      // to a window yet.
+      if !visible {
+        guard occlusionState.prepareToApply(false) else { return }
+        onOcclusionAppliedForTesting?(false)
+        return
+      }
       guard isReadyToApplyOcclusion else {
         if occlusionState.desired != visible {
           surfaceLogger.info(
@@ -1021,6 +1159,15 @@ final class GhosttySurfaceView: NSView, Identifiable {
       }
       guard occlusionState.prepareToApply(visible) else { return }
       onOcclusionAppliedForTesting?(visible)
+      return
+    }
+    // Occluding (pausing render) is always safe, even without a view
+    // hierarchy. This stops restored surfaces from spinning the GPU when
+    // they are not displayed.
+    if !visible {
+      guard occlusionState.prepareToApply(false) else { return }
+      onOcclusionAppliedForTesting?(false)
+      ghostty_surface_set_occlusion(surface, false)
       return
     }
     guard isReadyToApplyOcclusion else {
@@ -1045,9 +1192,16 @@ final class GhosttySurfaceView: NSView, Identifiable {
     surfaceLogger.info(
       "[CanvasExit] attachmentChange surface=\(debugID) "
         + "desired=\(String(describing: occlusionState.desired)) "
-        + "attached=\(hasAttachedSuperview) window=\(hasAttachedWindow)"
+        + "attached=\(hasAttachedSuperview) window=\(hasAttachedWindow) "
+        + "host=\(scrollWrapper?.hostKind.rawValue ?? "none") "
+        + "wrapper=\(scrollWrapper?.debugIdentifier ?? "none")"
     )
     _ = occlusionState.invalidateForAttachmentChange()
+    if superview == nil {
+      DispatchQueue.main.async { [weak self] in
+        self?.scrollWrapper?.ensureSurfaceAttached()
+      }
+    }
     guard isReadyToApplyOcclusion else { return }
     DispatchQueue.main.async { [weak self] in
       self?.reapplyOcclusionIfNeeded()
@@ -1056,6 +1210,43 @@ final class GhosttySurfaceView: NSView, Identifiable {
 
   func handleAttachmentChangeForTesting() {
     handleAttachmentChange()
+  }
+
+  func resumeDeferredOcclusionIfNeededForTesting() {
+    resumeDeferredOcclusionIfNeeded()
+  }
+
+  private func resumeDeferredOcclusionIfNeeded() {
+    guard isReadyToApplyOcclusion else { return }
+    reapplyOcclusionIfNeeded()
+  }
+
+  private func logLifecycleState(_ event: String) {
+    let windowVisible = window?.occlusionState.contains(.visible) ?? false
+    let windowKey = window?.isKeyWindow ?? false
+    let firstResponderMatches = window?.firstResponder === self
+    surfaceLogger.info(
+      "[TerminalWake] event=\(event) surface=\(debugID) hasSurface=\(surface != nil) "
+        + "attached=\(hasAttachedSuperview) window=\(hasAttachedWindow) "
+        + "desired=\(String(describing: occlusionState.desired)) "
+        + "focused=\(focused) firstResponder=\(firstResponderMatches) "
+        + "bounds=\(Int(bounds.width))x\(Int(bounds.height)) "
+        + "backing=\(Int(lastBackingSize.width))x\(Int(lastBackingSize.height)) "
+        + "windowVisible=\(windowVisible) windowKey=\(windowKey) "
+        + "host=\(scrollWrapper?.hostKind.rawValue ?? "none") "
+        + "wrapper=\(scrollWrapper?.debugIdentifier ?? "none")"
+    )
+  }
+
+  private func logDetachIntent(event: String) {
+    let stack = Thread.callStackSymbols.prefix(12).joined(separator: " | ")
+    surfaceLogger.info(
+      "[CanvasExit] detachIntent event=\(event) surface=\(debugID) "
+        + "host=\(scrollWrapper?.hostKind.rawValue ?? "none") "
+        + "wrapper=\(scrollWrapper?.debugIdentifier ?? "none") "
+        + "superview=\(String(describing: superview)) window=\(window != nil) "
+        + "stack=\(stack)"
+    )
   }
 
   private func reapplyOcclusionIfNeeded() {
@@ -2224,6 +2415,11 @@ extension GhosttySurfaceView: NSServicesMenuRequestor {
 }
 
 final class GhosttySurfaceScrollView: NSView {
+  enum HostKind: String {
+    case terminal
+    case canvas
+  }
+
   private struct ScrollbarState {
     let total: UInt64
     let offset: UInt64
@@ -2233,6 +2429,11 @@ final class GhosttySurfaceScrollView: NSView {
   private let scrollView: NSScrollView
   private let documentView: NSView
   private let surfaceView: GhosttySurfaceView
+  let hostKind: HostKind
+  private let debugID = String(UUID().uuidString.prefix(8))
+  var debugIdentifier: String {
+    debugID
+  }
   private var observers: [NSObjectProtocol] = []
 
   private var isLiveScrolling = false
@@ -2246,8 +2447,9 @@ final class GhosttySurfaceScrollView: NSView {
   /// terminal reflow.
   var pinnedSize: CGSize?
 
-  init(surfaceView: GhosttySurfaceView) {
+  init(surfaceView: GhosttySurfaceView, hostKind: HostKind = .terminal) {
     self.surfaceView = surfaceView
+    self.hostKind = hostKind
     scrollView = NSScrollView()
     scrollView.hasHorizontalScroller = false
     scrollView.autohidesScrollers = false
@@ -2261,6 +2463,11 @@ final class GhosttySurfaceScrollView: NSView {
     super.init(frame: .zero)
     addSubview(scrollView)
     surfaceView.scrollWrapper = self
+    surfaceHostLogger.info(
+      "[CanvasExit] hostInit wrapper=\(debugID) host=\(hostKind.rawValue) "
+        + "surface=\(surfaceView.debugIdentifierForLogging) "
+        + "attached=\(isSurfaceAttachedToDocumentView)"
+    )
     refreshAppearance()
 
     scrollView.contentView.postsBoundsChangedNotifications = true
@@ -2339,12 +2546,17 @@ final class GhosttySurfaceScrollView: NSView {
   override var mouseDownCanMoveWindow: Bool { false }
 
   isolated deinit {
+    surfaceHostLogger.info(
+      "[CanvasExit] hostDeinit wrapper=\(debugID) host=\(hostKind.rawValue) "
+        + "surface=\(surfaceView.debugIdentifierForLogging) "
+        + "attached=\(isSurfaceAttachedToDocumentView)"
+    )
     observers.forEach { NotificationCenter.default.removeObserver($0) }
   }
 
   override func layout() {
     super.layout()
-    ensureSurfaceViewAttached()
+    ensureSurfaceAttached()
     let effectiveSize = pinnedSize ?? bounds.size
     scrollView.frame = CGRect(origin: .zero, size: effectiveSize)
     surfaceView.frame.size = effectiveSize
@@ -2354,34 +2566,65 @@ final class GhosttySurfaceScrollView: NSView {
     surfaceView.updateSurfaceSize()
   }
 
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    ensureSurfaceAttached()
+  }
+
   func updateSurfaceSize() {
     surfaceView.updateSurfaceSize()
     needsLayout = true
   }
 
-  func ensureSurfaceViewAttached() {
-    guard surfaceView.superview !== documentView || surfaceView.scrollWrapper !== self else { return }
-    guard shouldTakeSurfaceOwnership else { return }
+  var isSurfaceAttachedToDocumentView: Bool {
+    surfaceView.superview === documentView
+  }
+
+  func ensureSurfaceAttached(requiresLiveHost: Bool = true) {
+    if requiresLiveHost {
+      guard superview != nil || window != nil else { return }
+    }
+    guard !isSurfaceAttachedToDocumentView || surfaceView.scrollWrapper !== self else { return }
+    guard hostKind == .terminal else { return }
+    guard surfaceView.superview == nil || isSurfaceAttachedToDocumentView else { return }
     if let currentOwner = surfaceView.scrollWrapper, currentOwner !== self, currentOwner.shouldKeepSurfaceOwnership {
       return
     }
-    documentView.addSubview(surfaceView)
+    surfaceHostLogger.info(
+      "[CanvasExit] hostReattach wrapper=\(debugID) host=\(hostKind.rawValue) "
+        + "surface=\(surfaceView.debugIdentifierForLogging) "
+        + "currentSuperview=\(String(describing: surfaceView.superview)) "
+        + "wrapperWindow=\(window != nil)"
+    )
+    if surfaceView.superview !== documentView {
+      documentView.addSubview(surfaceView)
+    }
     surfaceView.scrollWrapper = self
-  }
-
-  private var shouldTakeSurfaceOwnership: Bool {
-    guard let window else { return surfaceView.scrollWrapper == nil }
-    return window.isVisible && window.occlusionState.contains(.visible)
+    surfaceHostLogger.info(
+      "[CanvasExit] hostReattachComplete wrapper=\(debugID) host=\(hostKind.rawValue) "
+        + "surface=\(surfaceView.debugIdentifierForLogging) "
+        + "superview=\(surfaceView.superview != nil) "
+        + "window=\(surfaceView.window != nil) "
+        + "bounds=\(Int(surfaceView.bounds.width))x\(Int(surfaceView.bounds.height))"
+    )
   }
 
   private var shouldKeepSurfaceOwnership: Bool {
     guard let window else { return false }
-    return window.isVisible && window.occlusionState.contains(.visible)
+    return isSurfaceAttachedToDocumentView && window.isVisible && window.occlusionState.contains(.visible)
   }
 
   func updateScrollbar(total: UInt64, offset: UInt64, length: UInt64) {
     scrollbar = ScrollbarState(total: total, offset: offset, length: length)
     synchronizeScrollView()
+  }
+
+  /// Forward a scroll event to the parent responder chain, bypassing the
+  /// internal NSScrollView which would otherwise consume it.  Used in
+  /// canvas mode when the terminal has no scrollback content so the event
+  /// can reach CanvasScrollContainerView for canvas panning.
+  func forwardScrollToParent(with event: NSEvent) {
+    super.scrollWheel(with: event)
   }
 
   func refreshAppearance() {

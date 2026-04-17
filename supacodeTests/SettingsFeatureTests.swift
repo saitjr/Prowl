@@ -25,7 +25,7 @@ struct SettingsFeatureTests {
       crashReportsEnabled: true,
       githubIntegrationEnabled: true,
       deleteBranchOnDeleteWorktree: false,
-      automaticallyArchiveMergedWorktrees: true,
+      mergedWorktreeAction: .archive,
       promptForWorktreeCreation: true,
       hotkeyWindow: HotkeyWindowSettings(
         isEnabled: true,
@@ -60,7 +60,7 @@ struct SettingsFeatureTests {
       $0.crashReportsEnabled = true
       $0.githubIntegrationEnabled = true
       $0.deleteBranchOnDeleteWorktree = false
-      $0.automaticallyArchiveMergedWorktrees = true
+      $0.mergedWorktreeAction = .archive
       $0.promptForWorktreeCreation = true
       $0.hotkeyWindow = HotkeyWindowSettings(
         isEnabled: true,
@@ -107,7 +107,7 @@ struct SettingsFeatureTests {
       crashReportsEnabled: false,
       githubIntegrationEnabled: true,
       deleteBranchOnDeleteWorktree: true,
-      automaticallyArchiveMergedWorktrees: false,
+      mergedWorktreeAction: nil,
       promptForWorktreeCreation: false
     )
     @Shared(.settingsFile) var settingsFile
@@ -135,7 +135,7 @@ struct SettingsFeatureTests {
       crashReportsEnabled: initialSettings.crashReportsEnabled,
       githubIntegrationEnabled: initialSettings.githubIntegrationEnabled,
       deleteBranchOnDeleteWorktree: initialSettings.deleteBranchOnDeleteWorktree,
-      automaticallyArchiveMergedWorktrees: initialSettings.automaticallyArchiveMergedWorktrees,
+      mergedWorktreeAction: initialSettings.mergedWorktreeAction,
       promptForWorktreeCreation: initialSettings.promptForWorktreeCreation
     )
     await store.receive(\.delegate.settingsChanged)
@@ -205,7 +205,7 @@ struct SettingsFeatureTests {
       crashReportsEnabled: false,
       githubIntegrationEnabled: true,
       deleteBranchOnDeleteWorktree: true,
-      automaticallyArchiveMergedWorktrees: true,
+      mergedWorktreeAction: .archive,
       promptForWorktreeCreation: false
     )
 
@@ -224,7 +224,7 @@ struct SettingsFeatureTests {
       $0.crashReportsEnabled = false
       $0.githubIntegrationEnabled = true
       $0.deleteBranchOnDeleteWorktree = true
-      $0.automaticallyArchiveMergedWorktrees = true
+      $0.mergedWorktreeAction = .archive
       $0.promptForWorktreeCreation = false
       $0.selection = selection
       $0.repositorySettings = RepositorySettingsFeature.State(
@@ -280,6 +280,47 @@ struct SettingsFeatureTests {
     await store.receive(\.delegate.settingsChanged)
     #expect(store.state.repositorySettings?.globalDefaultWorktreeBaseDirectoryPath == expectedPath)
     #expect(settingsFile.global.defaultWorktreeBaseDirectoryPath == expectedPath)
+  }
+
+  @Test(.dependencies) func changingGlobalOverrideDefaultsUpdatesRepositorySettingsState() async {
+    let rootURL = URL(fileURLWithPath: "/tmp/repo")
+    @Shared(.settingsFile) var settingsFile
+    $settingsFile.withLock { $0.global = .default }
+    var state = SettingsFeature.State()
+    state.repositorySettings = RepositorySettingsFeature.State(
+      rootURL: rootURL,
+      repositoryKind: .git,
+      settings: .default,
+      userSettings: .default
+    )
+    let store = TestStore(initialState: state) {
+      SettingsFeature()
+    }
+
+    await store.send(.binding(.set(\.copyIgnoredOnWorktreeCreate, true))) {
+      $0.copyIgnoredOnWorktreeCreate = true
+      $0.repositorySettings?.globalCopyIgnoredOnWorktreeCreate = true
+    }
+    await store.receive(\.delegate.settingsChanged)
+
+    await store.send(.binding(.set(\.copyUntrackedOnWorktreeCreate, true))) {
+      $0.copyUntrackedOnWorktreeCreate = true
+      $0.repositorySettings?.globalCopyUntrackedOnWorktreeCreate = true
+    }
+    await store.receive(\.delegate.settingsChanged)
+
+    await store.send(.binding(.set(\.pullRequestMergeStrategy, .squash))) {
+      $0.pullRequestMergeStrategy = .squash
+      $0.repositorySettings?.globalPullRequestMergeStrategy = .squash
+    }
+    await store.receive(\.delegate.settingsChanged)
+
+    #expect(store.state.repositorySettings?.globalCopyIgnoredOnWorktreeCreate == true)
+    #expect(store.state.repositorySettings?.globalCopyUntrackedOnWorktreeCreate == true)
+    #expect(store.state.repositorySettings?.globalPullRequestMergeStrategy == .squash)
+    #expect(settingsFile.global.copyIgnoredOnWorktreeCreate == true)
+    #expect(settingsFile.global.copyUntrackedOnWorktreeCreate == true)
+    #expect(settingsFile.global.pullRequestMergeStrategy == .squash)
   }
 
   @Test(.dependencies) func setTerminalFontSizePersistsWithoutAnalyticsOrGlobalFanout() async {

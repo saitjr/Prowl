@@ -8,6 +8,8 @@ extension RepositoriesFeature {
     state: inout State,
     action: GithubIntegrationAction
   ) -> Effect<Action> {
+    @Dependency(\.continuousClock) var clock
+
     switch action {
     case .delayedPullRequestRefresh(let worktreeID):
       guard let worktree = state.worktree(for: worktreeID),
@@ -19,7 +21,7 @@ extension RepositoriesFeature {
       let repositoryRootURL = worktree.repositoryRootURL
       let worktreeIDs = repository.worktrees.map(\.id)
       return .run { send in
-        try? await ContinuousClock().sleep(for: .seconds(2))
+        try? await clock.sleep(for: .seconds(2))
         await send(
           .worktreeInfoEvent(
             .repositoryPullRequestRefresh(
@@ -124,7 +126,7 @@ extension RepositoriesFeature {
         state.inFlightPullRequestRefreshRepositoryIDs.removeAll()
         return .run { send in
           while !Task.isCancelled {
-            try? await ContinuousClock().sleep(for: githubIntegrationRecoveryInterval)
+            try? await clock.sleep(for: githubIntegrationRecoveryInterval)
             guard !Task.isCancelled else {
               return
             }
@@ -176,7 +178,7 @@ extension RepositoriesFeature {
       guard let repository = state.repositories[id: repositoryID] else {
         return .none
       }
-      var archiveWorktreeIDs: [Worktree.ID] = []
+      var mergedWorktreeIDs: [Worktree.ID] = []
       for worktreeID in pullRequestsByWorktreeID.keys.sorted() {
         guard let worktree = repository.worktrees[id: worktreeID] else {
           continue
@@ -193,24 +195,35 @@ extension RepositoriesFeature {
           pullRequest: pullRequest,
           state: &state
         )
-        if state.automaticallyArchiveMergedWorktrees,
+        if state.mergedWorktreeAction != nil,
           !previousMerged,
           nextMerged,
           !state.isMainWorktree(worktree),
           !state.isWorktreeArchived(worktreeID),
           !state.deletingWorktreeIDs.contains(worktreeID)
         {
-          archiveWorktreeIDs.append(worktreeID)
+          mergedWorktreeIDs.append(worktreeID)
         }
       }
-      guard !archiveWorktreeIDs.isEmpty else {
+      guard !mergedWorktreeIDs.isEmpty else {
         return .none
       }
-      return .merge(
-        archiveWorktreeIDs.map { worktreeID in
-          .send(.worktreeLifecycle(.archiveWorktreeConfirmed(worktreeID, repositoryID)))
-        }
-      )
+      switch state.mergedWorktreeAction {
+      case .archive:
+        return .merge(
+          mergedWorktreeIDs.map { worktreeID in
+            .send(.worktreeLifecycle(.archiveWorktreeConfirmed(worktreeID, repositoryID)))
+          }
+        )
+      case .delete:
+        return .merge(
+          mergedWorktreeIDs.map { worktreeID in
+            .send(.worktreeLifecycle(.deleteWorktreeConfirmed(worktreeID, repositoryID)))
+          }
+        )
+      case nil:
+        return .none
+      }
 
     case .pullRequestAction(let worktreeID, let action):
       guard let worktree = state.worktree(for: worktreeID),
@@ -322,7 +335,8 @@ extension RepositoriesFeature {
             return
           }
           @Shared(.repositorySettings(repoRoot)) var repositorySettings
-          let strategy = repositorySettings.pullRequestMergeStrategy
+          @Shared(.settingsFile) var settingsFile
+          let strategy = repositorySettings.pullRequestMergeStrategy ?? settingsFile.global.pullRequestMergeStrategy
           await send(.showToast(.inProgress("Merging pull request…")))
           do {
             try await githubCLI.mergePullRequest(worktreeRoot, pullRequest.number, strategy)
@@ -534,8 +548,8 @@ extension RepositoriesFeature {
         .cancel(id: CancelID.githubIntegrationRecovery)
       )
 
-    case .setAutomaticallyArchiveMergedWorktrees(let isEnabled):
-      state.automaticallyArchiveMergedWorktrees = isEnabled
+    case .setMergedWorktreeAction(let action):
+      state.mergedWorktreeAction = action
       return .none
     }
   }

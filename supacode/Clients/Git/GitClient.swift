@@ -22,6 +22,8 @@ enum GitOperation: String {
   case untrackedFilePaths = "untracked_file_paths"
   case showFile = "show_file"
   case remoteInfo = "remote_info"
+  case remoteList = "remote_list"
+  case fetchRemote = "fetch_remote"
 }
 
 enum GitClientError: LocalizedError {
@@ -41,6 +43,14 @@ enum GitClientError: LocalizedError {
 enum GitWorktreeCreateEvent: Equatable, Sendable {
   case outputLine(ShellStreamLine)
   case finished(Worktree)
+}
+
+nonisolated enum GitRemoteMatcher {
+  static func matchingRemote(for ref: String, from remotes: [String]) -> String? {
+    remotes
+      .sorted { $0.count > $1.count }
+      .first { ref.hasPrefix("\($0)/") }
+  }
 }
 
 struct GitClient {
@@ -530,6 +540,27 @@ struct GitClient {
     return nil
   }
 
+  nonisolated func remoteNames(for repoRoot: URL) async throws -> [String] {
+    let path = repoRoot.path(percentEncoded: false)
+    let output = try await runGit(
+      operation: .remoteList,
+      arguments: ["-C", path, "remote"]
+    )
+    return
+      output
+      .split(whereSeparator: \.isNewline)
+      .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+  }
+
+  nonisolated func fetchRemote(_ remote: String, for repoRoot: URL) async throws {
+    let path = repoRoot.path(percentEncoded: false)
+    _ = try await runGit(
+      operation: .fetchRemote,
+      arguments: ["-C", path, "fetch", remote]
+    )
+  }
+
   nonisolated func removeWorktree(_ worktree: Worktree, deleteBranch: Bool) async throws -> URL {
     let rootPath = worktree.repositoryRootURL.path(percentEncoded: false)
     let worktreeURL = worktree.workingDirectory.standardizedFileURL
@@ -683,13 +714,36 @@ struct GitClient {
     operation: GitOperation,
     arguments: [String]
   ) async throws -> String {
-    let env = URL(fileURLWithPath: "/usr/bin/env")
-    let command = ([env.path(percentEncoded: false)] + ["git"] + arguments).joined(separator: " ")
+    let gitURL = resolvedGitExecutableURL()
+    let command = ([gitURL.path(percentEncoded: false)] + arguments).joined(separator: " ")
     do {
-      return try await shell.run(env, ["git"] + arguments, nil).stdout
+      return try await shell.run(gitURL, arguments, nil).stdout
     } catch {
       throw wrapShellError(error, operation: operation, command: command)
     }
+  }
+
+  nonisolated private func resolvedGitExecutableURL() -> URL {
+    let fileManager = FileManager.default
+    let fallbackCandidates = [
+      "/opt/homebrew/bin/git",
+      "/usr/local/bin/git",
+      "/usr/bin/git",
+    ]
+    if let path = fallbackCandidates.first(where: fileManager.isExecutableFile(atPath:)) {
+      return URL(fileURLWithPath: path)
+    }
+
+    if let path = ProcessInfo.processInfo.environment["PATH"]?
+      .split(separator: ":")
+      .map(String.init)
+      .map({ "\($0)/git" })
+      .first(where: fileManager.isExecutableFile(atPath:))
+    {
+      return URL(fileURLWithPath: path)
+    }
+
+    return URL(fileURLWithPath: "/usr/bin/git")
   }
 
   nonisolated private func runWtList(repoRoot: URL) async throws -> String {

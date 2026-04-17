@@ -29,7 +29,7 @@ struct GitClientDiffPathEncodingTests {
     let calls = await store.calls
     #expect(calls.count == 1)
     let args = calls[0]
-    #expect(args.first == "git")
+    #expect(Array(args.prefix(2)) == ["-C", "/tmp/repo"])
     #expect(args.contains("-c"))
     #expect(args.contains("core.quotePath=false"))
     #expect(args.contains("diff"))
@@ -53,7 +53,7 @@ struct GitClientDiffPathEncodingTests {
     let calls = await store.calls
     #expect(calls.count == 1)
     let args = calls[0]
-    #expect(args.first == "git")
+    #expect(Array(args.prefix(2)) == ["-C", "/tmp/repo"])
     #expect(args.contains("-c"))
     #expect(args.contains("core.quotePath=false"))
     #expect(args.contains("ls-files"))

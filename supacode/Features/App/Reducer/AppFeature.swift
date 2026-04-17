@@ -377,12 +377,16 @@ struct AppFeature {
           }
           @Shared(.repositorySettings(repository.rootURL)) var repositorySettings
           @Shared(.userRepositorySettings(repository.rootURL)) var userRepositorySettings
-          state.settings.repositorySettings = RepositorySettingsFeature.State(
+          var repoSettingsState = RepositorySettingsFeature.State(
             rootURL: repository.rootURL,
             repositoryKind: repository.kind,
             settings: repositorySettings,
             userSettings: userRepositorySettings
           )
+          repoSettingsState.globalCopyIgnoredOnWorktreeCreate = state.settings.copyIgnoredOnWorktreeCreate
+          repoSettingsState.globalCopyUntrackedOnWorktreeCreate = state.settings.copyUntrackedOnWorktreeCreate
+          repoSettingsState.globalPullRequestMergeStrategy = state.settings.pullRequestMergeStrategy
+          state.settings.repositorySettings = repoSettingsState
         case .general, .notifications, .shortcuts, .hotkeyWindow, .worktree, .updates, .advanced, .github:
           state.settings.repositorySettings = nil
         }
@@ -410,9 +414,16 @@ struct AppFeature {
           .send(
             .repositories(
               .githubIntegration(
-                .setAutomaticallyArchiveMergedWorktrees(
-                  settings.automaticallyArchiveMergedWorktrees
+                .setMergedWorktreeAction(
+                  settings.mergedWorktreeAction
                 )
+              )
+            )
+          ),
+          .send(
+            .repositories(
+              .setArchivedAutoDeletePeriod(
+                settings.archivedAutoDeletePeriod
               )
             )
           ),
@@ -523,7 +534,8 @@ struct AppFeature {
               .createTabWithInput(
                 worktree,
                 input: "$EDITOR",
-                runSetupScriptIfNew: shouldRunSetupScript
+                runSetupScriptIfNew: shouldRunSetupScript,
+                autoCloseOnSuccess: false
               )
             )
           }
@@ -614,6 +626,8 @@ struct AppFeature {
           return .none
         }
         let command = customCommand.command
+        let closeOnSuccess = customCommand.closeOnSuccess
+        let commandName = customCommand.resolvedTitle
         switch customCommand.execution {
         case .shellScript:
           return .run { _ in
@@ -621,7 +635,22 @@ struct AppFeature {
               .createTabWithInput(
                 worktree,
                 input: command,
-                runSetupScriptIfNew: false
+                runSetupScriptIfNew: false,
+                autoCloseOnSuccess: closeOnSuccess,
+                customCommandName: commandName
+              )
+            )
+          }
+        case .split:
+          let direction = customCommand.splitDirection
+          return .run { _ in
+            await terminalClient.send(
+              .createSplitWithInput(
+                worktree,
+                direction: direction,
+                input: command,
+                autoCloseOnSuccess: closeOnSuccess,
+                customCommandName: commandName
               )
             )
           }
@@ -839,6 +868,9 @@ struct AppFeature {
       case .commandPalette(.delegate(.archiveWorktree(let worktreeID, let repositoryID))):
         return .send(.repositories(.worktreeLifecycle(.requestArchiveWorktree(worktreeID, repositoryID))))
 
+      case .commandPalette(.delegate(.viewArchivedWorktrees)):
+        return .send(.repositories(.selectArchivedWorktrees))
+
       case .commandPalette(.delegate(.refreshWorktrees)):
         return .send(.repositories(.refreshWorktrees))
 
@@ -884,6 +916,10 @@ struct AppFeature {
 
       case .commandPalette:
         return .none
+
+      case .terminalEvent(.customCommandSucceeded(_, let name, let durationMs)):
+        let message = "\(name) succeeded in \(formatCustomCommandDuration(durationMs))"
+        return .send(.repositories(.showToast(.success(message))))
 
       case .terminalEvent(.notificationReceived(let worktreeID, let title, let body)):
         var effects: [Effect<Action>] = [
@@ -979,4 +1015,18 @@ struct AppFeature {
       CommandPaletteFeature()
     }
   }
+}
+
+// Renders Custom Command run duration for status toasts.
+// Sub-second runs show ms; short runs show one decimal; long runs reuse the
+// whole-seconds formatter used by other command-finished notifications.
+func formatCustomCommandDuration(_ durationMs: Int) -> String {
+  if durationMs < 1_000 {
+    return "\(max(durationMs, 0))ms"
+  }
+  let seconds = Double(durationMs) / 1_000.0
+  if seconds < 10 {
+    return String(format: "%.1fs", seconds)
+  }
+  return WorktreeTerminalState.formatDuration(Int(seconds))
 }

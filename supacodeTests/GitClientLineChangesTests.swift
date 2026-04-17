@@ -31,7 +31,7 @@ struct GitClientLineChangesTests {
     let calls = await store.calls
     #expect(calls.count == 1)
     let args = calls[0]
-    #expect(args.first == "git")
+    #expect(Array(args.prefix(2)) == ["-C", "/tmp/repo"])
     #expect(args.contains("diff"))
     #expect(args.contains("HEAD"))
     #expect(args.contains("--shortstat"))

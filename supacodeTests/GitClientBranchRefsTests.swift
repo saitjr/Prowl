@@ -12,6 +12,33 @@ actor ShellCallStore {
 }
 
 struct GitClientBranchRefsTests {
+  @Test func remoteMatcherUsesRemotePrefix() {
+    let remote = GitRemoteMatcher.matchingRemote(
+      for: "origin/main",
+      from: ["origin", "upstream"]
+    )
+
+    #expect(remote == "origin")
+  }
+
+  @Test func remoteMatcherUsesLongestRemotePrefix() {
+    let remote = GitRemoteMatcher.matchingRemote(
+      for: "origin-fork/main",
+      from: ["origin", "origin-fork"]
+    )
+
+    #expect(remote == "origin-fork")
+  }
+
+  @Test func remoteMatcherReturnsNilForLocalBranch() {
+    let remote = GitRemoteMatcher.matchingRemote(
+      for: "local-branch",
+      from: ["origin"]
+    )
+
+    #expect(remote == nil)
+  }
+
   @Test func branchRefsIncludesLocalAndUpstreamRefs() async throws {
     let store = ShellCallStore()
     let output = """
@@ -37,7 +64,7 @@ struct GitClientBranchRefsTests {
     let calls = await store.calls
     #expect(calls.count == 1)
     let args = calls[0]
-    #expect(args.first == "git")
+    #expect(Array(args.prefix(2)) == ["-C", "/tmp/repo"])
     #expect(args.contains("for-each-ref"))
     #expect(args.contains("refs/heads"))
     #expect(args.contains("--format=%(refname:short)\t%(upstream:short)"))
