@@ -52,6 +52,7 @@ struct AppFeature {
     var lastKnownSystemNotificationsEnabled: Bool
     var launchRestoreMode: LaunchRestoreMode
     var suppressLayoutSaveUntilRelaunch = false
+    var launchedAt: Date?
     @Presents var alert: AlertState<Alert>?
 
     init(
@@ -104,6 +105,7 @@ struct AppFeature {
   }
 
   @Dependency(AnalyticsClient.self) private var analyticsClient
+  @Dependency(\.date.now) private var now
   @Dependency(RepositoryPersistenceClient.self) private var repositoryPersistence
   @Dependency(WorkspaceClient.self) private var workspaceClient
   @Dependency(SettingsWindowClient.self) private var settingsWindowClient
@@ -112,6 +114,16 @@ struct AppFeature {
   @Dependency(TerminalClient.self) private var terminalClient
   @Dependency(WorktreeInfoWatcherClient.self) private var worktreeInfoWatcher
   @Dependency(CustomShortcutRegistryClient.self) private var customShortcutRegistryClient
+
+  private func appQuitProperties(launchedAt: Date?) -> [String: Any]? {
+    guard let seconds = Self.sessionDurationSeconds(launchedAt: launchedAt, now: now) else { return nil }
+    return ["session_duration_seconds": seconds]
+  }
+
+  static func sessionDurationSeconds(launchedAt: Date?, now: Date) -> Int? {
+    guard let launchedAt else { return nil }
+    return max(0, Int(now.timeIntervalSince(launchedAt)))
+  }
 
   private func resolvedKeybindings(
     settings: SettingsFeature.State,
@@ -152,10 +164,13 @@ struct AppFeature {
       case .appLaunched:
         try? SupacodePaths.migrateLegacyCacheFilesIfNeeded()
         appLogger.info("[LayoutRestore] appLaunched: launchRestoreMode=\(String(describing: state.launchRestoreMode))")
+        state.launchedAt = now
         state.repositories.launchRestoreMode = state.launchRestoreMode
+        analyticsClient.capture("app_launched", nil)
         return .merge(
           .send(.repositories(.task)),
           .send(.settings(.task)),
+          .send(.updates(.task)),
           .run { _ in
             await MainActor.run {
               NSApplication.shared.dockTile.badgeLabel = nil
@@ -176,7 +191,6 @@ struct AppFeature {
       case .scenePhaseChanged(let phase):
         switch phase {
         case .active:
-          analyticsClient.capture("app_activated", nil)
           return .merge(
             .send(.repositories(.refreshWorktrees)),
             .run { send in
@@ -561,7 +575,7 @@ struct AppFeature {
       case .requestQuit:
         #if !DEBUG
           guard state.settings.confirmBeforeQuit else {
-            analyticsClient.capture("app_quit", nil)
+            analyticsClient.capture("app_quit", appQuitProperties(launchedAt: state.launchedAt))
             return .run { @MainActor _ in
               NSApplication.shared.terminate(nil)
             }
@@ -824,7 +838,7 @@ struct AppFeature {
         return .none
 
       case .alert(.presented(.confirmQuit)):
-        analyticsClient.capture("app_quit", nil)
+        analyticsClient.capture("app_quit", appQuitProperties(launchedAt: state.launchedAt))
         state.alert = nil
         return .run { @MainActor _ in
           NSApplication.shared.terminate(nil)
@@ -885,8 +899,18 @@ struct AppFeature {
           await terminalClient.send(.performBindingAction(worktree, action: action))
         }
 
+      case .commandPalette(.delegate(.changeFocusedTabIcon(let worktreeID))):
+        guard let worktree = state.repositories.selectedTerminalWorktree,
+          worktree.id == worktreeID
+        else {
+          return .none
+        }
+        return .run { _ in
+          await terminalClient.send(.presentTabIconPicker(worktree))
+        }
+
       case .commandPalette(.delegate(.openPullRequest(let worktreeID))):
-        return .send(.repositories(.githubIntegration(.pullRequestAction(worktreeID, .openOnGithub))))
+        return .send(.repositories(.githubIntegration(.pullRequestAction(worktreeID, .openOnCodeHost))))
 
       case .commandPalette(.delegate(.markPullRequestReady(let worktreeID))):
         return .send(.repositories(.githubIntegration(.pullRequestAction(worktreeID, .markReadyForReview))))
@@ -912,6 +936,9 @@ struct AppFeature {
       #if DEBUG
         case .commandPalette(.delegate(.debugTestToast(let toast))):
           return .send(.repositories(.showToast(toast)))
+
+        case .commandPalette(.delegate(.debugSimulateUpdateFound)):
+          return .send(.updates(.debugSimulateUpdateFound))
       #endif
 
       case .commandPalette:
@@ -982,20 +1009,48 @@ struct AppFeature {
 
       case .terminalEvent(.layoutRestored(let selectedWorktreeID)):
         appLogger.info("[LayoutRestore] layoutRestored: selectedWorktreeID=\(selectedWorktreeID ?? "nil")")
+        // Once layout is restored the saved tabs have all been re-created
+        // (each emits `tabCreated` → `markWorktreeOpened`) and a valid
+        // active worktree is in hand — the right moment to honor the
+        // "Default View = Shelf" preference for Layout-Restore launches,
+        // which the `repositorySnapshotLoaded` hook intentionally
+        // deferred to avoid a selection flash.
+        @Shared(.settingsFile) var settingsFile
+        let shouldEnterShelf =
+          settingsFile.global.defaultViewMode == .shelf
+          && !state.repositories.isShelfActive
+        var effects: [Effect<Action>] = []
         if let selectedWorktreeID {
           // Plain folders use .repository selection, not .worktree
           if let repo = state.repositories.repositories[id: selectedWorktreeID],
             repo.kind == .plain
           {
-            return .send(.repositories(.selectRepository(selectedWorktreeID)))
+            effects.append(.send(.repositories(.selectRepository(selectedWorktreeID))))
+          } else {
+            effects.append(.send(.repositories(.selectWorktree(selectedWorktreeID))))
           }
-          return .send(.repositories(.selectWorktree(selectedWorktreeID)))
         }
-        return .none
+        if shouldEnterShelf {
+          effects.append(.send(.repositories(.toggleShelf)))
+        }
+        return effects.isEmpty ? .none : .merge(effects)
 
       case .terminalEvent(.layoutRestoreFailed(let message)):
         appLogger.warning("[LayoutRestore] layoutRestoreFailed: \(message)")
         return .send(.repositories(.showToast(.warning(message))))
+
+      case .terminalEvent(.tabCreated(let worktreeID)):
+        // Every tab creation (user +, CLI open, layout restore, …)
+        // marks its worktree as Shelf-visible. Layout restore in
+        // particular only calls `selectWorktree` for the one active
+        // worktree; other restored worktrees only surface here.
+        return .send(.repositories(.markWorktreeOpened(worktreeID)))
+
+      case .terminalEvent(.tabClosed(let worktreeID, let remainingTabs)):
+        // Closing the last tab retires the book from the Shelf. Other
+        // closes are routine and need no Reducer-side bookkeeping.
+        guard remainingTabs == 0 else { return .none }
+        return .send(.repositories(.markWorktreeClosed(worktreeID)))
 
       case .terminalEvent:
         return .none

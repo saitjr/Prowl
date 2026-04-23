@@ -349,16 +349,17 @@ private struct CommandPaletteRowView: View {
     switch row.kind {
     case .checkForUpdates, .openRepository, .openSettings, .newWorktree, .viewArchivedWorktrees,
       .refreshWorktrees, .installCLI, .ghosttyCommand,
-      .openPullRequest, .markPullRequestReady, .mergePullRequest, .closePullRequest, .copyFailingJobURL,
+      .openPullRequest, .openRepositoryOnCodeHost, .markPullRequestReady, .mergePullRequest, .closePullRequest,
+      .copyFailingJobURL,
       .copyCiFailureLogs,
-      .rerunFailedJobs, .openFailingCheckDetails, .worktreeSelect:
+      .rerunFailedJobs, .openFailingCheckDetails, .worktreeSelect, .changeFocusedTabIcon:
       return nil
     case .removeWorktree:
       return "Remove"
     case .archiveWorktree:
       return "Archive"
     #if DEBUG
-      case .debugTestToast:
+      case .debugTestToast, .debugSimulateUpdateFound:
         return "Debug"
     #endif
     }
@@ -380,7 +381,7 @@ private struct CommandPaletteRowView: View {
       return "arrow.clockwise"
     case .ghosttyCommand:
       return "terminal"
-    case .openPullRequest:
+    case .openPullRequest, .openRepositoryOnCodeHost:
       return "arrow.up.right.square"
     case .markPullRequestReady:
       return "checkmark.seal"
@@ -400,12 +401,16 @@ private struct CommandPaletteRowView: View {
       return "terminal"
     case .worktreeSelect:
       return nil
+    case .changeFocusedTabIcon:
+      return "rectangle.on.rectangle"
     case .removeWorktree:
       return "trash"
     case .archiveWorktree:
       return "archivebox"
     #if DEBUG
       case .debugTestToast:
+        return "ladybug"
+      case .debugSimulateUpdateFound:
         return "ladybug"
     #endif
     }
@@ -415,14 +420,15 @@ private struct CommandPaletteRowView: View {
     switch row.kind {
     case .checkForUpdates, .openRepository, .openSettings, .newWorktree, .viewArchivedWorktrees,
       .refreshWorktrees, .installCLI, .ghosttyCommand,
-      .openPullRequest, .markPullRequestReady, .mergePullRequest, .closePullRequest, .copyFailingJobURL,
+      .openPullRequest, .openRepositoryOnCodeHost, .markPullRequestReady, .mergePullRequest, .closePullRequest,
+      .copyFailingJobURL,
       .copyCiFailureLogs,
-      .rerunFailedJobs, .openFailingCheckDetails:
+      .rerunFailedJobs, .openFailingCheckDetails, .changeFocusedTabIcon:
       return true
     case .worktreeSelect, .removeWorktree, .archiveWorktree:
       return false
     #if DEBUG
-      case .debugTestToast:
+      case .debugTestToast, .debugSimulateUpdateFound:
         return true
     #endif
     }
@@ -515,8 +521,8 @@ private struct CommandPaletteRowView: View {
       base = "Remove \(row.title)"
     case .archiveWorktree:
       base = "Archive \(row.title)"
-    case .openPullRequest:
-      base = "Open pull request on GitHub"
+    case .openPullRequest, .openRepositoryOnCodeHost:
+      base = row.title
     case .markPullRequestReady:
       base = "Mark pull request ready for review"
     case .mergePullRequest:
@@ -533,8 +539,10 @@ private struct CommandPaletteRowView: View {
       base = "Open failing check details"
     case .installCLI:
       base = "Install Command Line Tool"
+    case .changeFocusedTabIcon:
+      base = "Change Tab Icon"
     #if DEBUG
-      case .debugTestToast:
+      case .debugTestToast, .debugSimulateUpdateFound:
         base = row.title
     #endif
     }

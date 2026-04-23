@@ -119,6 +119,7 @@ final class GhosttySurfaceView: NSView, Identifiable {
   private var lastPerformKeyEvent: TimeInterval?
   private var currentCursor: NSCursor = .iBeam
   private var focused = false
+  private var detachedFocusClearTask: Task<Void, Never>?
   private var markedText = NSMutableAttributedString()
   private var keyboardLayoutChangeKeyUpSuppression: KeyboardLayoutChangeKeyUpSuppression?
   private var keyTextAccumulator: [String]?
@@ -474,9 +475,24 @@ final class GhosttySurfaceView: NSView, Identifiable {
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
     if window == nil {
-      // SwiftUI can temporarily detach a pane while rebuilding split/zoom layout.
-      // If we keep the stale local focus bit, detached panes still intercept bindings.
-      focusDidChange(false)
+      // SwiftUI can temporarily detach a pane while rebuilding split/zoom
+      // layout — or when another SwiftUI subtree (e.g. Shelf) takes over
+      // hosting the same surface. Clearing the focused bit immediately
+      // here is wrong for the re-attach case: AppKit silently resigns the
+      // surface without a call path we can observe, and same-window
+      // re-attach does not trigger `becomeFirstResponder`, so the focused
+      // bit never recovers. Delay the clear so a prompt re-attach
+      // cancels it; only when the surface truly stays detached past the
+      // grace window do we flip the bit.
+      detachedFocusClearTask?.cancel()
+      detachedFocusClearTask = Task { @MainActor [weak self] in
+        try? await ContinuousClock().sleep(for: .milliseconds(150))
+        guard !Task.isCancelled, let self, self.window == nil else { return }
+        focusDidChange(false)
+      }
+    } else {
+      detachedFocusClearTask?.cancel()
+      detachedFocusClearTask = nil
     }
     updateScreenObservers()
     updateContentScale()
@@ -571,6 +587,12 @@ final class GhosttySurfaceView: NSView, Identifiable {
   func focusDidChange(_ focused: Bool) {
     guard surface != nil else { return }
     guard self.focused != focused else { return }
+    // Retained as the single diagnostic entry point for focus regressions.
+    // Filter `make log-stream | grep '\[ShelfFocus\] focusDidChange'` to
+    // trace every focused-bit transition across the app.
+    SupaLogger("SurfaceFocus").info(
+      "[ShelfFocus] focusDidChange surface=\(debugID) \(self.focused) -> \(focused)"
+    )
     self.focused = focused
     if focused {
       bridge.state.bellCount = 0
@@ -931,15 +953,6 @@ final class GhosttySurfaceView: NSView, Identifiable {
 
   override func scrollWheel(with event: NSEvent) {
     guard let surface else { return }
-
-    // In canvas mode, if the terminal has no scrollback content the scroll
-    // event is useless here. Let it bubble up to the canvas container so
-    // two-finger gestures pan the canvas instead of being swallowed.
-    if scrollWrapper?.hostKind == .canvas, !hasScrollbackContent {
-      scrollWrapper?.forwardScrollToParent(with: event)
-      return
-    }
-
     var scrollX = event.scrollingDeltaX
     var scrollY = event.scrollingDeltaY
     if event.hasPreciseScrollingDeltas {
@@ -947,11 +960,6 @@ final class GhosttySurfaceView: NSView, Identifiable {
       scrollY *= 2
     }
     ghostty_surface_mouse_scroll(surface, scrollX, scrollY, scrollMods(for: event))
-  }
-
-  private var hasScrollbackContent: Bool {
-    guard let lastScrollbar else { return false }
-    return lastScrollbar.total > lastScrollbar.length
   }
 
   override func pressureChange(with event: NSEvent) {
@@ -2617,14 +2625,6 @@ final class GhosttySurfaceScrollView: NSView {
   func updateScrollbar(total: UInt64, offset: UInt64, length: UInt64) {
     scrollbar = ScrollbarState(total: total, offset: offset, length: length)
     synchronizeScrollView()
-  }
-
-  /// Forward a scroll event to the parent responder chain, bypassing the
-  /// internal NSScrollView which would otherwise consume it.  Used in
-  /// canvas mode when the terminal has no scrollback content so the event
-  /// can reach CanvasScrollContainerView for canvas panning.
-  func forwardScrollToParent(with event: NSEvent) {
-    super.scrollWheel(with: event)
   }
 
   func refreshAppearance() {

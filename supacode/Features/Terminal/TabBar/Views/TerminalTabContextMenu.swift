@@ -23,6 +23,16 @@ struct TerminalTabContextMenu: ViewModifier {
 
   func body(content: Content) -> some View {
     content.contextMenu {
+      Button("Change Tab Title...") {
+        actions.changeTitle(tabId)
+      }
+
+      Button("Change Tab Icon...") {
+        actions.changeIcon(tabId)
+      }
+
+      Divider()
+
       Button("Close Tab") {
         actions.closeTab(tabId)
       }

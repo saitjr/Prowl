@@ -37,6 +37,8 @@ final class WorktreeTerminalState {
   /// `syncFocusIfNeeded` skips `applySurfaceActivity` to avoid overriding
   /// Canvas-set occlusion with stale normal-mode window activity values.
   var isCanvasManaged = false
+  /// Tab whose icon picker should be presented. `nil` hides the picker.
+  var iconPickerTabId: TerminalTabID?
   var notifications: [WorktreeTerminalNotification] = []
   var notificationsEnabled = true
   private var commandFinishedNotificationEnabled = true
@@ -49,6 +51,17 @@ final class WorktreeTerminalState {
   /// Surfaces running a tracked Custom Command. The stored name is surfaced as a success
   /// toast when the command exits with code 0. One-shot: removed on the first finish event.
   private var pendingCustomCommands: [UUID: String] = [:]
+  /// Per-surface set of titles known to be the shell's idle prompt
+  /// (the title `precmd` restores between commands). Populated by
+  /// observing the first title that arrives after each
+  /// `command_finished` — reliably the precmd-set prompt. Subsequent
+  /// occurrences are skipped so they can't clobber the icon set by a
+  /// real command.
+  private var learnedIdleTitlesBySurface: [UUID: Set<String>] = [:]
+  /// Surfaces whose next title-change should be added to
+  /// `learnedIdleTitlesBySurface`. Armed by `command_finished`,
+  /// consumed by the next title arrival.
+  private var awaitingIdleTitleLearningBySurface: Set<UUID> = []
   var hasUnseenNotification: Bool {
     notifications.contains { !$0.isRead }
   }
@@ -539,6 +552,7 @@ final class WorktreeTerminalState {
     } catch {
       newSurface.closeSurface()
       surfaces.removeValue(forKey: newSurface.id)
+      cleanupCommandDetectorState(forSurfaceId: newSurface.id)
       return nil
     }
   }
@@ -607,6 +621,7 @@ final class WorktreeTerminalState {
       } catch {
         newSurface.closeSurface()
         surfaces.removeValue(forKey: newSurface.id)
+        cleanupCommandDetectorState(forSurfaceId: newSurface.id)
 
         return false
       }
@@ -735,12 +750,15 @@ final class WorktreeTerminalState {
         return nil
       }
       // Skip title/icon for blocking-script tabs as they are transient.
+      // Persist the icon only when the user has explicitly overridden it; otherwise
+      // restore should pick up the current default ("terminal").
       let isBlockingScriptTab = tab.id == runScriptTabId
+      let snapshotIcon: String? = (isBlockingScriptTab || !tab.isIconLocked) ? nil : tab.icon
       snapshotTabs.append(
         TerminalLayoutSnapshotPayload.SnapshotTab(
           tabID: tab.id.rawValue.uuidString,
           title: isBlockingScriptTab ? nil : tab.title,
-          icon: isBlockingScriptTab ? nil : tab.icon,
+          icon: snapshotIcon,
           splitRoot: splitRoot
         )
       )
@@ -828,7 +846,8 @@ final class WorktreeTerminalState {
           id: entry.tabID,
           title: entry.snapshotTab.title ?? "\(worktree.name) \(index + 1)",
           icon: entry.snapshotTab.icon ?? "terminal",
-          isTitleLocked: entry.snapshotTab.title != nil
+          isTitleLocked: entry.snapshotTab.title != nil,
+          isIconLocked: entry.snapshotTab.icon != nil
         )
       )
     }
@@ -850,6 +869,16 @@ final class WorktreeTerminalState {
       lastEmittedFocusSurfaceId = nil
     }
     emitTaskStatusIfChanged()
+    // Signal "this worktree now has tabs" so downstream Shelf
+    // bookkeeping (`markWorktreeOpened` via `terminalEvent(.tabCreated)`)
+    // adds the restored worktree to `openedWorktreeIDs`. Without this
+    // emit, only the active worktree (which goes through
+    // `.selectWorktree` on `.layoutRestored`) shows as a book on the
+    // Shelf — every other restored worktree is missing, even though
+    // the sidebar lists it and its terminal state is live.
+    if !restoredTabs.isEmpty {
+      onTabCreated?()
+    }
     terminalStateLogger.info(
       "[LayoutRestore] applySnapshot: success, restored \(restoredTabs.count) tab(s)"
         + " selectedTab=\(selectedTabID?.rawValue.uuidString ?? "nil")"
@@ -998,6 +1027,7 @@ final class WorktreeTerminalState {
       if self.focusedSurfaceIdByTab[tabId] == view.id {
         self.tabManager.updateTitle(tabId, title: title)
       }
+      self.noteTitleForCommandDetection(title, surfaceId: view.id, tabId: tabId)
     }
     view.bridge.onSplitAction = { [weak self, weak view] action in
       guard let self, let view else { return false }
@@ -1144,6 +1174,42 @@ final class WorktreeTerminalState {
       promptTabTitle(for: tabId, in: window)
     default:
       break
+    }
+  }
+
+  func promptChangeTabTitle(_ tabId: TerminalTabID) {
+    let surfaceWindow = focusedSurfaceIdByTab[tabId].flatMap { surfaces[$0]?.window }
+    guard let window = surfaceWindow ?? NSApp.keyWindow else { return }
+    promptTabTitle(for: tabId, in: window)
+  }
+
+  func presentIconPicker(for tabId: TerminalTabID) {
+    guard tabManager.tabs.contains(where: { $0.id == tabId }) else { return }
+    iconPickerTabId = tabId
+  }
+
+  func presentIconPickerForFocusedTab() {
+    guard let tabId = tabManager.selectedTabId else { return }
+    presentIconPicker(for: tabId)
+  }
+
+  func dismissIconPicker() {
+    iconPickerTabId = nil
+  }
+
+  /// Default SF Symbol used for a tab when the user has not set an override.
+  func defaultIcon(for tabId: TerminalTabID) -> String {
+    tabId == runScriptTabId ? "play.fill" : "terminal"
+  }
+
+  /// Apply an icon change for `tabId`. Pass `nil` to clear the override and
+  /// restore the tab's default icon.
+  func applyIconChange(_ tabId: TerminalTabID, icon newIcon: String?) {
+    if let newIcon, !newIcon.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      tabManager.overrideIcon(tabId, icon: newIcon)
+    } else {
+      tabManager.clearIconOverride(tabId)
+      tabManager.updateIcon(tabId, icon: defaultIcon(for: tabId))
     }
   }
 
@@ -1344,6 +1410,8 @@ final class WorktreeTerminalState {
       continuation.finish()
     }
 
+    noteCommandFinishedForCommandDetection(surfaceId: surfaceId)
+
     // Custom command success toast. One-shot: removed regardless of outcome.
     if let commandName = pendingCustomCommands.removeValue(forKey: surfaceId), exitCode == 0 {
       let durationMs = Int(durationNs / 1_000_000)
@@ -1381,6 +1449,100 @@ final class WorktreeTerminalState {
     appendNotification(title: title, body: body, surfaceId: surfaceId)
   }
 
+  // MARK: - Tab Icon Auto-Detection
+  //
+  // Strategy: each OSC 2 title change is matched against
+  // `CommandIconMap` (substring rules first, then first-token). A hit
+  // applies the icon immediately — no debounce. Rationale: the
+  // mapping is a curated allow-list, so a hit is by definition a
+  // command we're happy to brand the tab with; a miss leaves the
+  // existing icon untouched (selection-2 semantics).
+  //
+  // Idle-prompt suppression keeps the lookup focused on real
+  // commands: the first title after each `command_finished` is the
+  // shell's `precmd`-set prompt, and gets memorised into a learned-
+  // idle set so we never reach the mapping with a `user@host`-style
+  // string. Shape heuristics (`isLikelyIdleTitleByShape`) cover the
+  // bootstrap window before the learner has seen anything.
+  //
+  // The mapping-hit-equals-apply rule also unblocks short-lived
+  // commands (`git status`, `cd foo`) and TUIs that immediately
+  // overwrite their preexec title (`codex` → repo name) — both used
+  // to slip past a debounce-based detector.
+
+  func noteTitleForCommandDetection(_ rawTitle: String, surfaceId: UUID, tabId: TerminalTabID) {
+    let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !title.isEmpty else { return }
+    // Learn this surface's idle prompt: the first title after
+    // `command_finished` is reliably the precmd-set one.
+    if awaitingIdleTitleLearningBySurface.remove(surfaceId) != nil {
+      learnedIdleTitlesBySurface[surfaceId, default: []].insert(title)
+    }
+    // Drop idle prompts so they can't reach the mapping lookup.
+    if Self.isLikelyIdleTitleByShape(title) { return }
+    if learnedIdleTitlesBySurface[surfaceId]?.contains(title) == true { return }
+    guard let icon = CommandIconMap.iconForFirstToken(title) else { return }
+    applyResolvedIcon(icon, surfaceId: surfaceId, tabId: tabId)
+  }
+
+  func noteCommandFinishedForCommandDetection(surfaceId: UUID) {
+    // Arm the idle-prompt learner: the next title arrival is the
+    // precmd-set prompt and should join the learned-idle set.
+    awaitingIdleTitleLearningBySurface.insert(surfaceId)
+  }
+
+  /// Drop the per-surface detector state. Called when a surface is
+  /// closed or its parent tab is torn down so we don't retain
+  /// learned-idle sets keyed by ids that will never emit again.
+  func cleanupCommandDetectorState(forSurfaceId surfaceId: UUID) {
+    learnedIdleTitlesBySurface.removeValue(forKey: surfaceId)
+    awaitingIdleTitleLearningBySurface.remove(surfaceId)
+  }
+
+  /// Heuristic shape-only detection for shell idle prompts. The
+  /// bootstrap filter — before `awaitingIdleTitleLearning` has caught
+  /// the precmd-set prompt at least once on this surface — for two
+  /// common forms:
+  ///   1. `user@host[:path]` — contains `@` plus `:` or `/`, no spaces.
+  ///   2. Pure path — starts with `~`, `/`, or `…`, no spaces.
+  /// Real commands typically contain a space (program + args) or a
+  /// short single token (`ls`, `claude`, `vim`) that doesn't match
+  /// either shape, so the false-negative risk is small.
+  ///
+  /// Exposed (`internal static`) for direct unit testing — does not
+  /// touch instance state.
+  static func isLikelyIdleTitleByShape(_ title: String) -> Bool {
+    guard !title.contains(" ") else { return false }
+    if title.contains("@"), title.contains(":") || title.contains("/") {
+      return true
+    }
+    if title.hasPrefix("~") || title.hasPrefix("/") || title.hasPrefix("…") {
+      return true
+    }
+    return false
+  }
+
+  /// Apply an already-resolved icon to the tab. Honours focus and
+  /// user-icon-lock; encodes the icon through `storageString` so
+  /// `assetName`-bearing entries pick up the `@asset:` marker the
+  /// renderers parse via `ResolvedTabIcon`.
+  private func applyResolvedIcon(
+    _ icon: TabIconSource,
+    surfaceId: UUID,
+    tabId: TerminalTabID
+  ) {
+    // Per-tab UI is single-headed: only the focused surface in a
+    // multi-split tab gets to drive its tab's icon. Stops a
+    // background split's command from silently overriding what the
+    // user is currently looking at.
+    guard focusedSurfaceIdByTab[tabId] == surfaceId else { return }
+    guard let tab = tabManager.tabs.first(where: { $0.id == tabId }) else { return }
+    guard !tab.isIconLocked else { return }
+    let serialised = icon.storageString
+    guard tab.icon != serialised else { return }
+    tabManager.updateIcon(tabId, icon: serialised)
+  }
+
   static func formatDuration(_ seconds: Int) -> String {
     if seconds < 60 {
       return "\(seconds)s"
@@ -1402,6 +1564,7 @@ final class WorktreeTerminalState {
       surfaces.removeValue(forKey: surface.id)
       autoCloseSurfaceIds.remove(surface.id)
       pendingCustomCommands.removeValue(forKey: surface.id)
+      cleanupCommandDetectorState(forSurfaceId: surface.id)
     }
     focusedSurfaceIdByTab.removeValue(forKey: tabId)
     tabIsRunningById.removeValue(forKey: tabId)
@@ -1545,6 +1708,7 @@ final class WorktreeTerminalState {
       surfaces.removeValue(forKey: view.id)
       autoCloseSurfaceIds.remove(view.id)
       pendingCustomCommands.removeValue(forKey: view.id)
+      cleanupCommandDetectorState(forSurfaceId: view.id)
       return
     }
     guard let node = tree.find(id: view.id) else {
@@ -1552,6 +1716,7 @@ final class WorktreeTerminalState {
       surfaces.removeValue(forKey: view.id)
       autoCloseSurfaceIds.remove(view.id)
       pendingCustomCommands.removeValue(forKey: view.id)
+      cleanupCommandDetectorState(forSurfaceId: view.id)
       return
     }
     let nextSurface =
@@ -1563,6 +1728,7 @@ final class WorktreeTerminalState {
     surfaces.removeValue(forKey: view.id)
     autoCloseSurfaceIds.remove(view.id)
     pendingCustomCommands.removeValue(forKey: view.id)
+    cleanupCommandDetectorState(forSurfaceId: view.id)
     if newTree.isEmpty {
       trees.removeValue(forKey: tabId)
       focusedSurfaceIdByTab.removeValue(forKey: tabId)
@@ -1570,6 +1736,12 @@ final class WorktreeTerminalState {
       if tabId == runScriptTabId {
         setRunScriptTabId(nil)
       }
+      // Mirror `state.closeTab(_:)`'s `onTabClosed` emit: this path
+      // fires when the shell process exits (ghostty-driven close)
+      // and historically skipped the callback, which meant the
+      // Shelf's "retire the book when its last tab closes" logic
+      // never saw this very common path.
+      onTabClosed?()
       return
     }
     updateTree(newTree, for: tabId)

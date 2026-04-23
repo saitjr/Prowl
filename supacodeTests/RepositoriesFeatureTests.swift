@@ -67,6 +67,161 @@ struct RepositoriesFeatureTests {
     }
   }
 
+  @Test func updateWorktreeLineChangesReturnsFalseWhenCountsMatchExistingEntry() {
+    let worktree = makeWorktree(id: "/tmp/repo/feature", name: "feature", repoRoot: "/tmp/repo")
+    let repository = makeRepository(id: "/tmp/repo", worktrees: [worktree])
+    var state = makeState(repositories: [repository])
+    state.worktreeInfoByID[worktree.id] = WorktreeInfoEntry(
+      addedLines: 12,
+      removedLines: 4,
+      pullRequest: nil
+    )
+
+    let changed = updateWorktreeLineChanges(
+      worktreeID: worktree.id,
+      added: 12,
+      removed: 4,
+      state: &state
+    )
+
+    #expect(changed == false)
+    #expect(
+      state.worktreeInfoByID[worktree.id]
+        == WorktreeInfoEntry(addedLines: 12, removedLines: 4, pullRequest: nil)
+    )
+  }
+
+  @Test func updateWorktreeLineChangesReturnsFalseWhenClearingAlreadyEmptyDiffs() {
+    let worktree = makeWorktree(id: "/tmp/repo/feature", name: "feature", repoRoot: "/tmp/repo")
+    let repository = makeRepository(id: "/tmp/repo", worktrees: [worktree])
+    var state = makeState(repositories: [repository])
+    let pullRequest = makePullRequest(state: "OPEN", headRefName: worktree.name)
+    state.worktreeInfoByID[worktree.id] = WorktreeInfoEntry(
+      addedLines: nil,
+      removedLines: nil,
+      pullRequest: pullRequest
+    )
+
+    let changed = updateWorktreeLineChanges(
+      worktreeID: worktree.id,
+      added: 0,
+      removed: 0,
+      state: &state
+    )
+
+    #expect(changed == false)
+    #expect(
+      state.worktreeInfoByID[worktree.id]
+        == WorktreeInfoEntry(addedLines: nil, removedLines: nil, pullRequest: pullRequest)
+    )
+  }
+
+  @Test func updateWorktreeLineChangesReturnsTrueWhenCountsChange() {
+    let worktree = makeWorktree(id: "/tmp/repo/feature", name: "feature", repoRoot: "/tmp/repo")
+    let repository = makeRepository(id: "/tmp/repo", worktrees: [worktree])
+    var state = makeState(repositories: [repository])
+
+    let changed = updateWorktreeLineChanges(
+      worktreeID: worktree.id,
+      added: 12,
+      removed: 4,
+      state: &state
+    )
+
+    #expect(changed == true)
+    #expect(
+      state.worktreeInfoByID[worktree.id]
+        == WorktreeInfoEntry(addedLines: 12, removedLines: 4, pullRequest: nil)
+    )
+  }
+
+  @Test func filesChangedSkipsLineChangeActionWhenGitCountsMatchCurrentState() async {
+    let worktree = makeWorktree(id: "/tmp/repo/feature", name: "feature", repoRoot: "/tmp/repo")
+    let repository = makeRepository(id: "/tmp/repo", worktrees: [worktree])
+    var state = makeState(repositories: [repository])
+    state.worktreeInfoByID[worktree.id] = WorktreeInfoEntry(
+      addedLines: 12,
+      removedLines: 4,
+      pullRequest: nil
+    )
+
+    let store = TestStore(initialState: state) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.gitClient.lineChanges = { _ in (12, 4) }
+    }
+
+    await store.send(.worktreeInfoEvent(.filesChanged(worktreeID: worktree.id)))
+    await store.finish()
+  }
+
+  @Test func filesChangedSkipsLineChangeActionWhenGitReportsAlreadyEmptyDiff() async {
+    let worktree = makeWorktree(id: "/tmp/repo/feature", name: "feature", repoRoot: "/tmp/repo")
+    let repository = makeRepository(id: "/tmp/repo", worktrees: [worktree])
+    let pullRequest = makePullRequest(state: "OPEN", headRefName: worktree.name)
+    var state = makeState(repositories: [repository])
+    state.worktreeInfoByID[worktree.id] = WorktreeInfoEntry(
+      addedLines: nil,
+      removedLines: nil,
+      pullRequest: pullRequest
+    )
+
+    let store = TestStore(initialState: state) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.gitClient.lineChanges = { _ in (0, 0) }
+    }
+
+    await store.send(.worktreeInfoEvent(.filesChanged(worktreeID: worktree.id)))
+    await store.finish()
+  }
+
+  @Test func filesChangedSkipsLineChangeActionWhenEntryExplicitlyHoldsZeros() async {
+    let worktree = makeWorktree(id: "/tmp/repo/feature", name: "feature", repoRoot: "/tmp/repo")
+    let repository = makeRepository(id: "/tmp/repo", worktrees: [worktree])
+    var state = makeState(repositories: [repository])
+    state.worktreeInfoByID[worktree.id] = WorktreeInfoEntry(
+      addedLines: 0,
+      removedLines: 0,
+      pullRequest: nil
+    )
+
+    let store = TestStore(initialState: state) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.gitClient.lineChanges = { _ in (0, 0) }
+    }
+
+    await store.send(.worktreeInfoEvent(.filesChanged(worktreeID: worktree.id)))
+    await store.finish()
+  }
+
+  @Test func filesChangedEmitsLineChangeActionWhenGitCountsDiffer() async {
+    let worktree = makeWorktree(id: "/tmp/repo/feature", name: "feature", repoRoot: "/tmp/repo")
+    let repository = makeRepository(id: "/tmp/repo", worktrees: [worktree])
+    var state = makeState(repositories: [repository])
+    state.worktreeInfoByID[worktree.id] = WorktreeInfoEntry(
+      addedLines: 12,
+      removedLines: 4,
+      pullRequest: nil
+    )
+
+    let store = TestStore(initialState: state) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.gitClient.lineChanges = { _ in (15, 9) }
+    }
+
+    await store.send(.worktreeInfoEvent(.filesChanged(worktreeID: worktree.id)))
+    await store.receive(\.worktreeLineChangesLoaded) {
+      $0.worktreeInfoByID[worktree.id] = WorktreeInfoEntry(
+        addedLines: 15,
+        removedLines: 9,
+        pullRequest: nil
+      )
+    }
+  }
+
   @Test func repositoriesLoadedEmitsChangedDelegateWhenTransitioningFromRestoring() async {
     let worktree = makeWorktree(id: "/tmp/repo/main", name: "main")
     let repository = makeRepository(id: "/tmp/repo", worktrees: [worktree])
@@ -765,6 +920,7 @@ struct RepositoriesFeatureTests {
     await store.send(.selectWorktree(worktree.id)) {
       $0.selection = .worktree(worktree.id)
       $0.sidebarSelectedWorktreeIDs = [worktree.id]
+      $0.openedWorktreeIDs = [worktree.id]
     }
     await store.receive(\.delegate.selectedWorktreeChanged)
   }
@@ -784,6 +940,7 @@ struct RepositoriesFeatureTests {
     await store.send(.selectWorktree(wt2.id)) {
       $0.selection = .worktree(wt2.id)
       $0.sidebarSelectedWorktreeIDs = [wt2.id]
+      $0.openedWorktreeIDs = [wt2.id]
     }
     await store.receive(\.delegate.selectedWorktreeChanged)
   }
@@ -819,6 +976,7 @@ struct RepositoriesFeatureTests {
     await store.send(.selectRepository(repository.id)) {
       $0.selection = .repository(repository.id)
       $0.sidebarSelectedWorktreeIDs = []
+      $0.openedWorktreeIDs = [repository.id]
     }
     #expect(
       store.state.selectedTerminalWorktree
@@ -854,6 +1012,7 @@ struct RepositoriesFeatureTests {
     await store.receive(\.selectRepository) {
       $0.selection = .repository(repository.id)
       $0.sidebarSelectedWorktreeIDs = []
+      $0.openedWorktreeIDs = [repository.id]
     }
     await store.receive(\.delegate.selectedWorktreeChanged)
   }
@@ -880,6 +1039,7 @@ struct RepositoriesFeatureTests {
     await store.receive(\.selectRepository) {
       $0.selection = .repository(repository.id)
       $0.sidebarSelectedWorktreeIDs = []
+      $0.openedWorktreeIDs = [repository.id]
     }
     await store.receive(\.delegate.selectedWorktreeChanged)
   }
@@ -3148,6 +3308,143 @@ struct RepositoriesFeatureTests {
     await store.finish()
   }
 
+  @Test func pullRequestActionOpenOnCodeHostOpensPullRequestURLWhenAvailable() async {
+    let repoRoot = "/tmp/repo"
+    let mainWorktree = makeWorktree(id: repoRoot, name: "main", repoRoot: repoRoot)
+    let featureWorktree = makeWorktree(
+      id: "\(repoRoot)/feature",
+      name: "feature",
+      repoRoot: repoRoot
+    )
+    let repository = makeRepository(id: repoRoot, worktrees: [mainWorktree, featureWorktree])
+    let pullRequest = makePullRequest(
+      state: "OPEN",
+      headRefName: featureWorktree.name,
+      number: 12,
+      url: "https://github.com/octo/repo/pull/12"
+    )
+    var state = makeState(repositories: [repository])
+    state.worktreeInfoByID[featureWorktree.id] = WorktreeInfoEntry(
+      addedLines: nil,
+      removedLines: nil,
+      pullRequest: pullRequest
+    )
+    let openedURLs = LockIsolated<[URL]>([])
+    let store = TestStore(initialState: state) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.gitClient.repositoryWebURL = { _ in
+        Issue.record("repositoryWebURL should not be requested when a pull request URL exists")
+        return nil
+      }
+      $0.openURLClient.open = { url in
+        openedURLs.withValue { $0.append(url) }
+      }
+    }
+
+    await store.send(.githubIntegration(.pullRequestAction(featureWorktree.id, .openOnCodeHost)))
+    await store.finish()
+
+    #expect(openedURLs.value == [URL(string: "https://github.com/octo/repo/pull/12")!])
+  }
+
+  @Test func pullRequestActionOpenOnCodeHostFallsBackToRepositoryURL() async {
+    let repoRoot = "/tmp/repo"
+    let mainWorktree = makeWorktree(id: repoRoot, name: "main", repoRoot: repoRoot)
+    let featureWorktree = makeWorktree(
+      id: "\(repoRoot)/feature",
+      name: "feature",
+      repoRoot: repoRoot
+    )
+    let repository = makeRepository(id: repoRoot, worktrees: [mainWorktree, featureWorktree])
+    let repositoryURL = URL(string: "https://gitlab.com/group/subgroup/repo")!
+    let openedURLs = LockIsolated<[URL]>([])
+    let store = TestStore(initialState: makeState(repositories: [repository])) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.gitClient.repositoryWebURL = { _ in
+        repositoryURL
+      }
+      $0.openURLClient.open = { url in
+        openedURLs.withValue { $0.append(url) }
+      }
+    }
+
+    await store.send(.githubIntegration(.pullRequestAction(featureWorktree.id, .openOnCodeHost)))
+    await store.finish()
+
+    #expect(openedURLs.value == [repositoryURL])
+  }
+
+  @Test func pullRequestActionOpenOnCodeHostFallsBackWhenPullRequestURLIsInvalid() async {
+    let repoRoot = "/tmp/repo"
+    let mainWorktree = makeWorktree(id: repoRoot, name: "main", repoRoot: repoRoot)
+    let featureWorktree = makeWorktree(
+      id: "\(repoRoot)/feature",
+      name: "feature",
+      repoRoot: repoRoot
+    )
+    let repository = makeRepository(id: repoRoot, worktrees: [mainWorktree, featureWorktree])
+    let pullRequest = makePullRequest(
+      state: "OPEN",
+      headRefName: featureWorktree.name,
+      number: 12,
+      url: "/octo/repo/pull/12"
+    )
+    var state = makeState(repositories: [repository])
+    state.worktreeInfoByID[featureWorktree.id] = WorktreeInfoEntry(
+      addedLines: nil,
+      removedLines: nil,
+      pullRequest: pullRequest
+    )
+    let repositoryURL = URL(string: "https://git.example.com/scm/repo")!
+    let openedURLs = LockIsolated<[URL]>([])
+    let store = TestStore(initialState: state) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.gitClient.repositoryWebURL = { _ in
+        repositoryURL
+      }
+      $0.openURLClient.open = { url in
+        openedURLs.withValue { $0.append(url) }
+      }
+    }
+
+    await store.send(.githubIntegration(.pullRequestAction(featureWorktree.id, .openOnCodeHost)))
+    await store.finish()
+
+    #expect(openedURLs.value == [repositoryURL])
+  }
+
+  @Test func pullRequestActionOpenOnCodeHostShowsAlertWhenRepositoryURLUnavailable() async {
+    let repoRoot = "/tmp/repo"
+    let mainWorktree = makeWorktree(id: repoRoot, name: "main", repoRoot: repoRoot)
+    let featureWorktree = makeWorktree(
+      id: "\(repoRoot)/feature",
+      name: "feature",
+      repoRoot: repoRoot
+    )
+    let repository = makeRepository(id: repoRoot, worktrees: [mainWorktree, featureWorktree])
+    let store = TestStore(initialState: makeState(repositories: [repository])) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.gitClient.repositoryWebURL = { _ in nil }
+    }
+
+    await store.send(.githubIntegration(.pullRequestAction(featureWorktree.id, .openOnCodeHost)))
+    await store.receive(\.presentAlert) {
+      $0.alert = AlertState<RepositoriesFeature.Alert> {
+        TextState("Repository URL not available")
+      } actions: {
+        ButtonState(role: .cancel) {
+          TextState("OK")
+        }
+      } message: {
+        TextState("Prowl could not determine a code host URL for this repository.")
+      }
+    }
+  }
+
   @Test func worktreeInfoEventRepositoryPullRequestRefreshMarksInFlightThenCompletes() async {
     let repoRoot = "/tmp/repo"
     let mainWorktree = makeWorktree(id: repoRoot, name: "main", repoRoot: repoRoot)
@@ -3542,7 +3839,7 @@ struct RepositoriesFeatureTests {
     let fixedDate = Date(timeIntervalSince1970: 1_000_000)
     var state = makeState(repositories: [repository])
     state.archivedWorktrees = [
-      ArchivedWorktree(id: worktree.id, archivedAt: .distantPast),
+      ArchivedWorktree(id: worktree.id, archivedAt: .distantPast)
     ]
     state.archivedAutoDeletePeriod = nil
     let store = TestStore(initialState: state) {
@@ -3562,7 +3859,7 @@ struct RepositoriesFeatureTests {
     let fixedDate = Date(timeIntervalSince1970: 1_000_000)
     var state = makeState(repositories: [repository])
     state.archivedWorktrees = [
-      ArchivedWorktree(id: mainWorktree.id, archivedAt: .distantPast),
+      ArchivedWorktree(id: mainWorktree.id, archivedAt: .distantPast)
     ]
     state.archivedAutoDeletePeriod = .oneDay
     let store = TestStore(initialState: state) {
@@ -3626,6 +3923,7 @@ struct RepositoriesFeatureTests {
     await store.receive(\.selectWorktree) {
       $0.selection = .worktree(wt1.id)
       $0.sidebarSelectedWorktreeIDs = [wt1.id]
+      $0.openedWorktreeIDs = [wt1.id]
     }
     await store.receive(\.delegate.selectedWorktreeChanged)
   }
@@ -3644,6 +3942,7 @@ struct RepositoriesFeatureTests {
     await store.receive(\.selectWorktree) {
       $0.selection = .worktree(wt2.id)
       $0.sidebarSelectedWorktreeIDs = [wt2.id]
+      $0.openedWorktreeIDs = [wt2.id]
     }
     await store.receive(\.delegate.selectedWorktreeChanged)
   }
@@ -3660,6 +3959,7 @@ struct RepositoriesFeatureTests {
     await store.receive(\.selectWorktree) {
       $0.selection = .worktree(wt1.id)
       $0.sidebarSelectedWorktreeIDs = [wt1.id]
+      $0.openedWorktreeIDs = [wt1.id]
     }
     await store.receive(\.delegate.selectedWorktreeChanged)
   }
@@ -3680,6 +3980,7 @@ struct RepositoriesFeatureTests {
     await store.receive(\.selectWorktree) {
       $0.selection = .worktree(wt2.id)
       $0.sidebarSelectedWorktreeIDs = [wt2.id]
+      $0.openedWorktreeIDs = [wt2.id]
     }
     await store.receive(\.delegate.selectedWorktreeChanged)
   }
@@ -3696,6 +3997,7 @@ struct RepositoriesFeatureTests {
     await store.receive(\.selectWorktree) {
       $0.selection = .worktree(wt2.id)
       $0.sidebarSelectedWorktreeIDs = [wt2.id]
+      $0.openedWorktreeIDs = [wt2.id]
     }
     await store.receive(\.delegate.selectedWorktreeChanged)
   }
@@ -3721,6 +4023,7 @@ struct RepositoriesFeatureTests {
     await store.receive(\.selectWorktree) {
       $0.selection = .worktree(worktree.id)
       $0.sidebarSelectedWorktreeIDs = [worktree.id]
+      $0.openedWorktreeIDs = [worktree.id]
     }
     await store.receive(\.delegate.selectedWorktreeChanged)
   }
@@ -3743,6 +4046,7 @@ struct RepositoriesFeatureTests {
     await store.receive(\.selectWorktree) {
       $0.selection = .worktree(wt3.id)
       $0.sidebarSelectedWorktreeIDs = [wt3.id]
+      $0.openedWorktreeIDs = [wt3.id]
     }
     await store.receive(\.delegate.selectedWorktreeChanged)
   }
@@ -3765,6 +4069,7 @@ struct RepositoriesFeatureTests {
     await store.receive(\.selectWorktree) {
       $0.selection = .worktree(wt1.id)
       $0.sidebarSelectedWorktreeIDs = [wt1.id]
+      $0.openedWorktreeIDs = [wt1.id]
     }
     await store.receive(\.delegate.selectedWorktreeChanged)
   }
@@ -3813,6 +4118,7 @@ struct RepositoriesFeatureTests {
     await store.receive(\.selectWorktree) {
       $0.selection = .worktree(wt1.id)
       $0.sidebarSelectedWorktreeIDs = [wt1.id]
+      $0.openedWorktreeIDs = [wt1.id]
     }
     await store.receive(\.delegate.selectedWorktreeChanged)
   }
@@ -3836,7 +4142,8 @@ struct RepositoriesFeatureTests {
   private func makePullRequest(
     state: String,
     headRefName: String? = nil,
-    number: Int = 1
+    number: Int = 1,
+    url: String? = nil
   ) -> GithubPullRequest {
     GithubPullRequest(
       number: number,
@@ -3849,7 +4156,7 @@ struct RepositoriesFeatureTests {
       mergeable: nil,
       mergeStateStatus: nil,
       updatedAt: nil,
-      url: "https://example.com/pull/\(number)",
+      url: url ?? "https://example.com/pull/\(number)",
       headRefName: headRefName,
       baseRefName: "main",
       commitsCount: 1,

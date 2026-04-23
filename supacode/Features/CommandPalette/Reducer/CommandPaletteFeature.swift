@@ -50,8 +50,10 @@ struct CommandPaletteFeature {
     case rerunFailedJobs(Worktree.ID)
     case openFailingCheckDetails(Worktree.ID)
     case installCLI
+    case changeFocusedTabIcon(Worktree.ID)
     #if DEBUG
       case debugTestToast(RepositoriesFeature.StatusToast)
+      case debugSimulateUpdateFound
     #endif
   }
 
@@ -223,23 +225,18 @@ struct CommandPaletteFeature {
         kind: .installCLI
       )
     )
-    if repositories.selectedTerminalWorktree != nil {
+    if let terminalWorktree = repositories.selectedTerminalWorktree {
+      items.append(
+        CommandPaletteItem(
+          id: CommandPaletteItemID.changeFocusedTabIcon(terminalWorktree.id),
+          title: "Change Tab Icon...",
+          subtitle: terminalWorktree.name,
+          kind: .changeFocusedTabIcon(terminalWorktree.id)
+        )
+      )
       items.append(contentsOf: ghosttyCommandItems(ghosttyCommands))
     }
-    if let selectedWorktreeID = repositories.selectedWorktreeID,
-      let repositoryID = repositories.repositoryID(containing: selectedWorktreeID),
-      repositories.repositories[id: repositoryID]?.capabilities.supportsPullRequests == true,
-      let pullRequest = repositories.worktreeInfo(for: selectedWorktreeID)?.pullRequest,
-      pullRequest.number > 0,
-      pullRequest.state.uppercased() != "CLOSED"
-    {
-      let pullRequestActions = pullRequestItems(
-        pullRequest: pullRequest,
-        worktreeID: selectedWorktreeID,
-        repositoryID: repositoryID
-      )
-      items.append(contentsOf: pullRequestActions)
-    }
+    items.append(contentsOf: selectedCodeHostItems(from: repositories))
     #if DEBUG
       items.append(contentsOf: debugToastItems())
     #endif
@@ -267,16 +264,59 @@ struct CommandPaletteFeature {
       ids.append(contentsOf: CommandPaletteItemID.pullRequestIDs(repositoryID: repository.id))
       for worktree in repository.worktrees {
         ids.append(CommandPaletteItemID.worktreeSelect(worktree.id))
+        ids.append(CommandPaletteItemID.changeFocusedTabIcon(worktree.id))
       }
     }
     return ids
   }
 }
 
+private func selectedCodeHostItems(
+  from repositories: RepositoriesFeature.State
+) -> [CommandPaletteItem] {
+  guard
+    let selectedWorktreeID = repositories.selectedWorktreeID,
+    let repositoryID = repositories.repositoryID(containing: selectedWorktreeID),
+    let repository = repositories.repositories[id: repositoryID]
+  else {
+    return []
+  }
+
+  let codeHost = repositories.codeHost(for: repositoryID)
+  let pullRequest = repositories.worktreeInfo(for: selectedWorktreeID)?.pullRequest
+  if repository.capabilities.supportsPullRequests,
+    let pullRequest,
+    pullRequest.number > 0,
+    pullRequest.state.uppercased() != "CLOSED"
+  {
+    return pullRequestItems(
+      pullRequest: pullRequest,
+      worktreeID: selectedWorktreeID,
+      repositoryID: repositoryID,
+      codeHost: codeHost
+    )
+  }
+
+  guard repository.capabilities.supportsCodeHost else {
+    return []
+  }
+
+  return [
+    CommandPaletteItem(
+      id: CommandPaletteItemID.pullRequestOpen(repositoryID),
+      title: "Open Repository on \(codeHost.displayName)",
+      subtitle: repository.name,
+      kind: .openRepositoryOnCodeHost(selectedWorktreeID),
+      priorityTier: 2
+    ),
+  ]
+}
+
 private func pullRequestItems(
   pullRequest: GithubPullRequest,
   worktreeID: Worktree.ID,
-  repositoryID: Repository.ID
+  repositoryID: Repository.ID,
+  codeHost: CodeHost
 ) -> [CommandPaletteItem] {
   let state = pullRequest.state.uppercased()
   let isOpen = state == "OPEN"
@@ -350,7 +390,7 @@ private func pullRequestItems(
   var items: [CommandPaletteItem] = [
     CommandPaletteItem(
       id: CommandPaletteItemID.pullRequestOpen(repositoryID),
-      title: "Open PR on GitHub",
+      title: "Open Pull Request on \(codeHost.displayName)",
       subtitle: pullRequest.title,
       kind: .openPullRequest(worktreeID),
       priorityTier: 2
@@ -436,6 +476,12 @@ private func makeClosePullRequestItem(
         subtitle: "Simulates a success toast",
         kind: .debugTestToast(.success("Pull request merged"))
       ),
+      CommandPaletteItem(
+        id: "debug.update.simulate-found",
+        title: "[Debug] Simulate Update Found",
+        subtitle: "Shows the toolbar update badge without querying Sparkle",
+        kind: .debugSimulateUpdateFound
+      ),
     ]
   }
 #endif
@@ -464,6 +510,10 @@ private enum CommandPaletteItemID {
 
   static func worktreeSelect(_ worktreeID: Worktree.ID) -> CommandPaletteItem.ID {
     "worktree.\(worktreeID).select"
+  }
+
+  static func changeFocusedTabIcon(_ worktreeID: Worktree.ID) -> CommandPaletteItem.ID {
+    "terminal.\(worktreeID).change-focused-tab-icon"
   }
 
   static func ghosttyCommand(_ command: GhosttyCommand) -> CommandPaletteItem.ID {
@@ -572,7 +622,10 @@ private func delegateAction(for kind: CommandPaletteItem.Kind) -> CommandPalette
     return .installCLI
   case .ghosttyCommand(let action):
     return .ghosttyCommand(action)
+  case .changeFocusedTabIcon(let worktreeID):
+    return .changeFocusedTabIcon(worktreeID)
   case .openPullRequest,
+    .openRepositoryOnCodeHost,
     .markPullRequestReady,
     .mergePullRequest,
     .closePullRequest,
@@ -584,6 +637,8 @@ private func delegateAction(for kind: CommandPaletteItem.Kind) -> CommandPalette
   #if DEBUG
     case .debugTestToast(let toast):
       return .debugTestToast(toast)
+    case .debugSimulateUpdateFound:
+      return .debugSimulateUpdateFound
   #endif
   }
 }
@@ -592,7 +647,8 @@ private func pullRequestDelegateAction(
   for kind: CommandPaletteItem.Kind
 ) -> CommandPaletteFeature.Delegate? {
   switch kind {
-  case .openPullRequest(let worktreeID):
+  case .openPullRequest(let worktreeID),
+    .openRepositoryOnCodeHost(let worktreeID):
     return .openPullRequest(worktreeID)
   case .markPullRequestReady(let worktreeID):
     return .markPullRequestReady(worktreeID)
@@ -618,10 +674,11 @@ private func pullRequestDelegateAction(
     .viewArchivedWorktrees,
     .refreshWorktrees,
     .installCLI,
-    .ghosttyCommand:
+    .ghosttyCommand,
+    .changeFocusedTabIcon:
     return nil
   #if DEBUG
-    case .debugTestToast:
+    case .debugTestToast, .debugSimulateUpdateFound:
       return nil
   #endif
   }

@@ -33,6 +33,7 @@ struct CommandPaletteItem: Identifiable, Equatable {
     case refreshWorktrees
     case ghosttyCommand(String)
     case openPullRequest(Worktree.ID)
+    case openRepositoryOnCodeHost(Worktree.ID)
     case markPullRequestReady(Worktree.ID)
     case mergePullRequest(Worktree.ID)
     case closePullRequest(Worktree.ID)
@@ -41,8 +42,10 @@ struct CommandPaletteItem: Identifiable, Equatable {
     case rerunFailedJobs(Worktree.ID)
     case openFailingCheckDetails(Worktree.ID)
     case installCLI
+    case changeFocusedTabIcon(Worktree.ID)
     #if DEBUG
       case debugTestToast(RepositoriesFeature.StatusToast)
+      case debugSimulateUpdateFound
     #endif
   }
 
@@ -62,10 +65,14 @@ struct CommandPaletteItem: Identifiable, Equatable {
       .rerunFailedJobs,
       .openFailingCheckDetails:
       return true
-    case .worktreeSelect, .removeWorktree, .archiveWorktree:
+    case .worktreeSelect,
+      .removeWorktree,
+      .archiveWorktree,
+      .changeFocusedTabIcon,
+      .openRepositoryOnCodeHost:
       return false
     #if DEBUG
-      case .debugTestToast:
+      case .debugTestToast, .debugSimulateUpdateFound:
         return true
     #endif
     }
@@ -79,6 +86,7 @@ struct CommandPaletteItem: Identifiable, Equatable {
     case .ghosttyCommand:
       return false
     case .openPullRequest,
+      .openRepositoryOnCodeHost,
       .markPullRequestReady,
       .mergePullRequest,
       .closePullRequest,
@@ -88,10 +96,11 @@ struct CommandPaletteItem: Identifiable, Equatable {
       .openFailingCheckDetails,
       .worktreeSelect,
       .removeWorktree,
-      .archiveWorktree:
+      .archiveWorktree,
+      .changeFocusedTabIcon:
       return false
     #if DEBUG
-      case .debugTestToast:
+      case .debugTestToast, .debugSimulateUpdateFound:
         return false
     #endif
     }
@@ -111,7 +120,8 @@ struct CommandPaletteItem: Identifiable, Equatable {
       return AppShortcuts.CommandID.archivedWorktrees
     case .refreshWorktrees:
       return AppShortcuts.CommandID.refreshWorktrees
-    case .openPullRequest:
+    case .openPullRequest,
+      .openRepositoryOnCodeHost:
       return AppShortcuts.CommandID.openPullRequest
     case .ghosttyCommand,
       .markPullRequestReady,
@@ -124,10 +134,11 @@ struct CommandPaletteItem: Identifiable, Equatable {
       .installCLI,
       .worktreeSelect,
       .removeWorktree,
-      .archiveWorktree:
+      .archiveWorktree,
+      .changeFocusedTabIcon:
       return nil
     #if DEBUG
-      case .debugTestToast:
+      case .debugTestToast, .debugSimulateUpdateFound:
         return nil
     #endif
     }

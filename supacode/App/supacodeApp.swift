@@ -96,16 +96,58 @@ struct SupacodeApp: App {
   @State private var commandKeyObserver: CommandKeyObserver
   @State private var cliSocketServer: CLISocketServer
   @State private var store: StoreOf<AppFeature>
+  @State private var memoryWatchdog: MemoryWatchdog
 
   private static func cliLaunchOpenPath() -> String? {
     let args = ProcessInfo.processInfo.arguments
     guard let flagIndex = args.firstIndex(of: ProwlSocket.cliOpenPathArgument),
-          args.indices.contains(flagIndex + 1)
+      args.indices.contains(flagIndex + 1)
     else {
       return nil
     }
     let path = args[flagIndex + 1]
     return path.isEmpty ? nil : path
+  }
+
+  /// Reads a secret from Info.plist, returning nil when the value is empty or
+  /// still contains an unsubstituted `$(VAR)` placeholder (the Makefile did not
+  /// inject a value for that key).
+  private static func infoPlistSecret(_ dictionary: [String: Any], key: String) -> String? {
+    guard let value = dictionary[key] as? String else { return nil }
+    guard !value.isEmpty, !value.hasPrefix("$(") else { return nil }
+    return value
+  }
+
+  private static func bootstrapTelemetry(initialSettings: GlobalSettings) {
+    #if !DEBUG
+      let infoDictionary = Bundle.main.infoDictionary ?? [:]
+      let releaseName = (infoDictionary["CFBundleShortVersionString"] as? String).map { "prowl@\($0)" }
+      let environment = initialSettings.updateChannel == .tip ? "tip" : "production"
+
+      if initialSettings.crashReportsEnabled, let dsn = infoPlistSecret(infoDictionary, key: "ProwlSentryDSN") {
+        SentrySDK.start { options in
+          options.dsn = dsn
+          options.environment = environment
+          if let releaseName { options.releaseName = releaseName }
+          options.tracesSampleRate = 0.05
+          options.enableAppHangTracking = true
+          options.appHangTimeoutInterval = 3
+          options.beforeSend = SentryEventFilter.filterSystemHang
+        }
+      }
+      if initialSettings.analyticsEnabled,
+        let apiKey = infoPlistSecret(infoDictionary, key: "ProwlPostHogAPIKey"),
+        let host = infoPlistSecret(infoDictionary, key: "ProwlPostHogHost")
+      {
+        let config = PostHogConfig(apiKey: apiKey, host: host)
+        config.enableSwizzling = false
+        config.captureApplicationLifecycleEvents = false
+        config.captureScreenViews = false
+        PostHogSDK.shared.setup(config)
+        PostHogSDK.shared.register(AnalyticsContext.superProperties)
+        PostHogSDK.shared.identify(InstallIdentifier.current)
+      }
+    #endif
   }
 
   @MainActor
@@ -141,25 +183,7 @@ struct SupacodeApp: App {
       schema: .appResolverSchema(),
       userOverrides: initialSettings.keybindingUserOverrides
     )
-    #if !DEBUG
-      if initialSettings.crashReportsEnabled {
-        SentrySDK.start { options in
-          options.dsn = "__SENTRY_DSN__"
-          options.tracesSampleRate = 1.0
-          options.enableAppHangTracking = false
-        }
-      }
-      if initialSettings.analyticsEnabled {
-        let posthogAPIKey = "__POSTHOG_API_KEY__"
-        let posthogHost = "__POSTHOG_HOST__"
-        let config = PostHogConfig(apiKey: posthogAPIKey, host: posthogHost)
-        config.enableSwizzling = false
-        PostHogSDK.shared.setup(config)
-        if let hardwareUUID = HardwareInfo.uuid {
-          PostHogSDK.shared.identify(hardwareUUID)
-        }
-      }
-    #endif
+    Self.bootstrapTelemetry(initialSettings: initialSettings)
     if let resourceURL = Bundle.main.resourceURL?.appendingPathComponent("ghostty") {
       setenv("GHOSTTY_RESOURCES_DIR", resourceURL.path, 1)
     }
@@ -219,6 +243,22 @@ struct SupacodeApp: App {
     let cliServer = Self.makeCLISocketServer(appStore: appStore, terminalManager: terminalManager)
     _cliSocketServer = State(initialValue: cliServer)
 
+    let watchdog = MemoryWatchdog(
+      analyticsCapture: AnalyticsClient.liveValue.capture,
+      contextProvider: { [appStore, terminalManager] in
+        let state = appStore.state
+        return MemoryWatchdog.Context(
+          repositoryCount: state.repositories.repositories.count,
+          openedWorktreeCount: state.repositories.repositories.flatMap(\.worktrees).count,
+          terminalTabCount: terminalManager.activeWorktreeStates.flatMap(\.tabManager.tabs).count
+        )
+      }
+    )
+    #if !DEBUG
+      watchdog.start()
+    #endif
+    _memoryWatchdog = State(initialValue: watchdog)
+
     runtime.onQuit = { [weak appStore] in
       appStore?.send(.requestQuit)
     }
@@ -228,6 +268,9 @@ struct SupacodeApp: App {
       cliServer: cliServer,
       hotkeyWindowSettings: initialSettings.hotkeyWindow
     )
+    #if DEBUG
+      DebugWindowManager.shared.configure(store: appStore)
+    #endif
   }
 
   private static func makeTargetResolver(
@@ -474,8 +517,8 @@ struct SupacodeApp: App {
       let repoRoot = repository.rootURL
         .standardizedFileURL.path(percentEncoded: false)
       if repoRoot == normalized,
-         !repository.capabilities.supportsWorktrees,
-         repository.capabilities.supportsRunnableFolderActions
+        !repository.capabilities.supportsWorktrees,
+        repository.capabilities.supportsRunnableFolderActions
       {
         return OpenResolverResult(
           resolution: .exactRoot, worktreeID: repository.id,
@@ -502,7 +545,7 @@ struct SupacodeApp: App {
         }
       }
       if !repository.capabilities.supportsWorktrees,
-         repository.capabilities.supportsRunnableFolderActions
+        repository.capabilities.supportsRunnableFolderActions
       {
         let repoRoot = repository.rootURL
           .standardizedFileURL.path(percentEncoded: false)
@@ -532,8 +575,8 @@ struct SupacodeApp: App {
         return worktree
       }
       if repository.id == id,
-         repository.capabilities.supportsRunnableFolderActions,
-         !repository.capabilities.supportsWorktrees
+        repository.capabilities.supportsRunnableFolderActions,
+        !repository.capabilities.supportsWorktrees
       {
         return Worktree(
           id: repository.id,
@@ -609,17 +652,21 @@ struct SupacodeApp: App {
     .environment(ghosttyShortcuts)
     .environment(commandKeyObserver)
     .commands {
-      WorktreeCommands(store: store)
-      SidebarCommands(store: store)
-      TerminalCommands(ghosttyShortcuts: ghosttyShortcuts)
-      WindowCommands(
-        ghosttyShortcuts: ghosttyShortcuts,
-        resolvedKeybindings: store.resolvedKeybindings,
-        hotkeyWindowShortcut: store.settings.hotkeyWindow.isEnabled
-          ? store.settings.hotkeyWindow.hotkey?.keyboardShortcut : nil,
-        hotkeyWindowShortcutDisplay: store.settings.hotkeyWindow.isEnabled
-          ? store.settings.hotkeyWindow.hotkey?.display : nil
-      )
+      // Grouped to keep `commands` under SwiftUI's CommandsBuilder
+      // tuple-arity limit when `#if DEBUG` adds the Debug menu below.
+      Group {
+        WorktreeCommands(store: store)
+        SidebarCommands(store: store)
+        TerminalCommands(ghosttyShortcuts: ghosttyShortcuts)
+        WindowCommands(
+          ghosttyShortcuts: ghosttyShortcuts,
+          resolvedKeybindings: store.resolvedKeybindings,
+          hotkeyWindowShortcut: store.settings.hotkeyWindow.isEnabled
+            ? store.settings.hotkeyWindow.hotkey?.keyboardShortcut : nil,
+          hotkeyWindowShortcutDisplay: store.settings.hotkeyWindow.isEnabled
+            ? store.settings.hotkeyWindow.hotkey?.display : nil
+        )
+      }
       CommandGroup(after: .textEditing) {
         Button("Command Palette") {
           store.send(.commandPalette(.togglePresented))
@@ -653,6 +700,13 @@ struct SupacodeApp: App {
         }
         .help("Install the prowl command line tool to /usr/local/bin")
       }
+      #if DEBUG
+        CommandMenu("Debug") {
+          Button("Icon Catalog") {
+            DebugWindowManager.shared.show()
+          }
+        }
+      #endif
       CommandGroup(replacing: .help) {
         Button("Homepage", systemImage: "house") {
           if let url = URL(string: "https://prowl.onev.cat/") {

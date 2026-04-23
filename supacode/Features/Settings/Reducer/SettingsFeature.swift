@@ -33,6 +33,7 @@ struct SettingsFeature {
     var terminalFontSize: Float32?
     var hotkeyWindow: HotkeyWindowSettings
     var keybindingUserOverrides: KeybindingUserOverrideStore
+    var defaultViewMode: DefaultViewMode
     var cliInstallStatus: CLIInstallStatus = .notInstalled
     var cliInstallShowAlert: Bool = true
     var selection: SettingsSection? = .general
@@ -70,6 +71,7 @@ struct SettingsFeature {
       terminalFontSize = settings.terminalFontSize
       hotkeyWindow = settings.hotkeyWindow.normalized
       keybindingUserOverrides = settings.keybindingUserOverrides
+      defaultViewMode = settings.defaultViewMode
     }
 
     var globalSettings: GlobalSettings {
@@ -103,7 +105,8 @@ struct SettingsFeature {
         archivedAutoDeletePeriod: archivedAutoDeletePeriod,
         terminalFontSize: terminalFontSize,
         hotkeyWindow: hotkeyWindow.normalized,
-        keybindingUserOverrides: keybindingUserOverrides
+        keybindingUserOverrides: keybindingUserOverrides,
+        defaultViewMode: defaultViewMode
       )
     }
   }
@@ -208,6 +211,7 @@ struct SettingsFeature {
         state.terminalFontSize = normalizedSettings.terminalFontSize
         state.hotkeyWindow = normalizedSettings.hotkeyWindow.normalized
         state.keybindingUserOverrides = normalizedSettings.keybindingUserOverrides
+        state.defaultViewMode = normalizedSettings.defaultViewMode
         state.syncGlobalDefaults(from: normalizedSettings)
         return .send(.delegate(.settingsChanged(normalizedSettings)))
 
@@ -378,9 +382,13 @@ struct SettingsFeature {
   ) -> Effect<Action> {
     let settings = state.globalSettings
     @Shared(.settingsFile) var settingsFile
+    let previouslyAnalyticsEnabled = settingsFile.global.analyticsEnabled
     $settingsFile.withLock { $0.global = settings }
     if captureAnalytics, settings.analyticsEnabled {
       analyticsClient.capture("settings_changed", nil)
+    }
+    if previouslyAnalyticsEnabled, !settings.analyticsEnabled {
+      analyticsClient.reset()
     }
     if emitSettingsChanged {
       return .send(.delegate(.settingsChanged(settings)))
