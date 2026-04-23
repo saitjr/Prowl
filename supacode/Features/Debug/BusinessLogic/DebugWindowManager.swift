@@ -18,12 +18,27 @@ import SwiftUI
 
     private init() {}
 
+    private func applyWindowConfiguration(_ window: NSWindow, colorScheme: ColorScheme?) {
+      let resolvedAppearance = WindowAppearanceResolver.appearance(for: colorScheme)
+      if window.appearance?.name != resolvedAppearance?.name {
+        window.appearance = resolvedAppearance
+      }
+    }
+
     func configure(store: StoreOf<AppFeature>) {
       self.store = store
     }
 
+    func updateAppearance(colorScheme: ColorScheme?) {
+      guard let window else { return }
+      applyWindowConfiguration(window, colorScheme: colorScheme)
+    }
+
     func show() {
       if let existing = window {
+        if let store {
+          applyWindowConfiguration(existing, colorScheme: store.settings.appearanceMode.colorScheme)
+        }
         if existing.isMiniaturized {
           existing.deminiaturize(nil)
         }
@@ -46,6 +61,7 @@ import SwiftUI
       new.isReleasedWhenClosed = false
       new.setContentSize(NSSize(width: 800, height: 600))
       new.minSize = NSSize(width: 700, height: 500)
+      applyWindowConfiguration(new, colorScheme: store.settings.appearanceMode.colorScheme)
       new.center()
       new.makeKeyAndOrderFront(nil)
       window = new

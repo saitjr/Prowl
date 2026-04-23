@@ -13,6 +13,15 @@ final class SettingsWindowManager {
 
   private init() {}
 
+  private func applyWindowConfiguration(_ window: NSWindow, colorScheme: ColorScheme?) {
+    window.tabbingMode = .disallowed
+    window.level = .normal
+    let resolvedAppearance = WindowAppearanceResolver.appearance(for: colorScheme)
+    if window.appearance?.name != resolvedAppearance?.name {
+      window.appearance = resolvedAppearance
+    }
+  }
+
   func configure(
     store: StoreOf<AppFeature>,
     ghosttyShortcuts: GhosttyShortcutManager,
@@ -23,8 +32,16 @@ final class SettingsWindowManager {
     self.commandKeyObserver = commandKeyObserver
   }
 
+  func updateAppearance(colorScheme: ColorScheme?) {
+    guard let settingsWindow else { return }
+    applyWindowConfiguration(settingsWindow, colorScheme: colorScheme)
+  }
+
   func show() {
     if let existingWindow = settingsWindow {
+      if let store {
+        applyWindowConfiguration(existingWindow, colorScheme: store.settings.appearanceMode.colorScheme)
+      }
       if existingWindow.isMiniaturized {
         existingWindow.deminiaturize(nil)
       }
@@ -45,7 +62,6 @@ final class SettingsWindowManager {
     window.titleVisibility = .hidden
     window.identifier = NSUserInterfaceItemIdentifier("settings")
     window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
-    window.tabbingMode = .disallowed
     window.titlebarAppearsTransparent = true
     window.toolbarStyle = .unified
     window.toolbar = NSToolbar(identifier: "SettingsToolbar")
@@ -55,6 +71,7 @@ final class SettingsWindowManager {
     window.isReleasedWhenClosed = false
     window.setContentSize(NSSize(width: 800, height: 600))
     window.minSize = NSSize(width: 750, height: 500)
+    applyWindowConfiguration(window, colorScheme: store.settings.appearanceMode.colorScheme)
 
     window.center()
     window.makeKeyAndOrderFront(nil)

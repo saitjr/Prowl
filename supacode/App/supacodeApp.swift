@@ -644,6 +644,12 @@ struct SupacodeApp: App {
       .onChange(of: store.resolvedKeybindings) { _, newValue in
         syncGhosttyManagedShortcuts(with: newValue)
       }
+      .onChange(of: store.settings.appearanceMode) { _, newValue in
+        SettingsWindowManager.shared.updateAppearance(colorScheme: newValue.colorScheme)
+        #if DEBUG
+          DebugWindowManager.shared.updateAppearance(colorScheme: newValue.colorScheme)
+        #endif
+      }
       .onChange(of: store.settings.hotkeyWindow) { _, newValue in
         HotkeyWindowManager.shared.update(settings: newValue)
       }

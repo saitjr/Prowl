@@ -19,8 +19,13 @@ final class WindowTabbingView: NSView, NSWindowDelegate {
 
   func disallowTabbing() {
     guard let window else { return }
-    window.tabbingMode = .disallowed
-    window.identifier = NSUserInterfaceItemIdentifier("main")
+    if window.tabbingMode != .disallowed {
+      window.tabbingMode = .disallowed
+    }
+    let mainIdentifier = NSUserInterfaceItemIdentifier("main")
+    if window.identifier != mainIdentifier {
+      window.identifier = mainIdentifier
+    }
     WindowFrameAutosaveSanitizer.sanitizeAttachedWindow(window)
     if window.delegate !== self {
       window.delegate = self
