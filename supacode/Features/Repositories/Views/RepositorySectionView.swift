@@ -1,4 +1,5 @@
 import ComposableArchitecture
+import Sharing
 import SwiftUI
 
 struct RepositorySectionView: View {
@@ -11,14 +12,17 @@ struct RepositorySectionView: View {
   @Binding var expandedRepoIDs: Set<Repository.ID>
   @Bindable var store: StoreOf<RepositoriesFeature>
   let terminalManager: WorktreeTerminalManager
+  let onRepositorySelected: () -> Void
   @Environment(\.colorScheme) private var colorScheme
   @Environment(\.resolvedKeybindings) private var resolvedKeybindings
   @State private var isHovering = false
+  @Shared(.repositoryAppearances) private var repositoryAppearances
 
   var body: some View {
     let state = store.state
     let isExpanded = expandedRepoIDs.contains(repository.id)
     let isRemovingRepository = state.isRemovingRepository(repository)
+    let isSelected = state.selection == .repository(repository.id)
     let openRepoSettings = {
       _ = store.send(.repositoryManagement(.openRepositorySettings(repository.id)))
     }
@@ -32,20 +36,30 @@ struct RepositorySectionView: View {
         }
       }
     }
-    let isDragging = isDragActive
-
+    let appearance = repositoryAppearances[repository.id] ?? .empty
     let header = HStack {
-      RepoHeaderRow(
-        name: repository.name,
-        isRemoving: isRemovingRepository,
-        tabCount: Self.openTabCount(
-          for: repository,
+      // Inner HStack groups the name row and the tab-count badge so they
+      // share the leading-aligned region of the outer header. Crucially
+      // the badge is its own leaf view (`RepoHeaderTabCountBadge`) — it
+      // owns the `terminalManager` read so this view never subscribes
+      // to the manager-wide states dictionary.
+      HStack {
+        RepoHeaderRow(
+          name: repository.name,
+          customTitle: store.repositoryCustomTitles[repository.id],
+          isRemoving: isRemovingRepository,
+          icon: appearance.icon,
+          iconTint: appearance.color?.color ?? .accentColor,
+          repositoryRootURL: repository.rootURL,
+          nameTooltip: repository.capabilities.supportsWorktrees
+            ? (isExpanded ? "Collapse" : "Expand")
+            : "Open terminal in folder"
+        )
+        RepoHeaderTabCountBadge(
+          repository: repository,
           terminalManager: terminalManager
-        ),
-        nameTooltip: repository.capabilities.supportsWorktrees
-          ? (isExpanded ? "Collapse" : "Expand")
-          : "Open terminal in folder"
-      )
+        )
+      }
       .frame(maxWidth: .infinity, alignment: .leading)
       .background {
         if Self.debugHeaderLayers {
@@ -57,7 +71,7 @@ struct RepositorySectionView: View {
             }
         }
       }
-      if isRemovingRepository && !isDragging {
+      if isRemovingRepository {
         ProgressView()
           .controlSize(.small)
           .background {
@@ -71,7 +85,14 @@ struct RepositorySectionView: View {
             }
           }
       }
-      if isHovering && !isDragging {
+      if let color = appearance.color {
+        Circle()
+          .fill(color.color)
+          .frame(width: 8, height: 8)
+          .help(color.displayName)
+          .accessibilityLabel(Text("Repo color: \(color.displayName)"))
+      }
+      if isHovering {
         Menu {
           Button("Repo Settings") {
             openRepoSettings()
@@ -159,11 +180,16 @@ struct RepositorySectionView: View {
       }
     }
     .frame(maxWidth: .infinity, minHeight: headerCellHeight, maxHeight: .infinity, alignment: .center)
+    .padding(.horizontal, 12)
     .padding(.top, hasTopSpacing ? 4 : 0)
     .padding(.bottom, hasTopSpacing && !repository.capabilities.supportsWorktrees ? 4 : 0)
     .contentShape(.interaction, .rect)
     .background {
-      if Self.debugHeaderLayers {
+      if isSelected {
+        RoundedRectangle(cornerRadius: 5)
+          .fill(Color.accentColor.opacity(0.18))
+          .padding(.horizontal, 6)
+      } else if Self.debugHeaderLayers {
         Rectangle()
           .fill(.red.opacity(0.12))
           .overlay {
@@ -173,6 +199,10 @@ struct RepositorySectionView: View {
       }
     }
     .onHover { isHovering = $0 }
+    .onTapGesture {
+      onRepositorySelected()
+    }
+    .accessibilityAddTraits(.isButton)
     .contentShape(.rect)
     .contextMenu {
       Button("Repo Settings") {
@@ -190,7 +220,7 @@ struct RepositorySectionView: View {
     .environment(\.colorScheme, colorScheme)
     .preferredColorScheme(colorScheme)
 
-    Group {
+    VStack(spacing: 0) {
       header
         .tag(SidebarSelection.repository(repository.id))
       if isExpanded {
@@ -204,6 +234,7 @@ struct RepositorySectionView: View {
         )
       }
     }
+    .id(SidebarScrollID.repository(repository.id))
   }
 
   private var headerCellHeight: CGFloat {

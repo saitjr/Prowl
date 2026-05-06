@@ -1,4 +1,7 @@
+import Sharing
 import SwiftUI
+
+private let shelfLogger = SupaLogger("Shelf")
 
 /// Vertical spine rendering for a single book on the Shelf.
 ///
@@ -31,10 +34,22 @@ struct ShelfSpineView: View {
   /// enum into this view.
   let closeMenuTitle: String
   let onCloseBook: (() -> Void)?
+  /// "Repo Settings" — opens the per-repo Settings tab. Always
+  /// available regardless of book kind since every book belongs to a
+  /// repository.
+  let onOpenRepositorySettings: () -> Void
 
   @State private var isHovering = false
+  @Shared(.repositoryAppearances) private var repositoryAppearances
+  @Environment(GhosttyShortcutManager.self) private var ghosttyShortcuts
 
   var body: some View {
+    // Body-invocation counter signpost. With ~10 spines visible during
+    // a book switch, the trace can multiply this event count by spine
+    // count to estimate per-click body work. Emitted as a no-arg event
+    // (instant timeline marker) so it imposes no work even when
+    // Instruments isn't attached.
+    let _ = shelfLogger.event("ShelfSpineView.body")
     VStack(spacing: 0) {
       headerButton
       tabList
@@ -77,7 +92,6 @@ struct ShelfSpineView: View {
           .frame(width: 1)
       }
     }
-    .help(book.displayName)
   }
 
   /// Step-wise accent-alpha ladder keyed by `distanceFromOpen`. 100%
@@ -98,12 +112,28 @@ struct ShelfSpineView: View {
   /// bumps its tint to 80% of the selected book's intensity — a clear
   /// "this is interactable" affordance that sits just below the open
   /// book and animates in/out smoothly.
+  ///
+  /// When the book's repository has a user-pinned color, that color
+  /// replaces `Color.accentColor` as the proximity-tint base so the
+  /// shelf reads as "books on shelves" instead of one continuous
+  /// accent ribbon. The proximity ladder is unchanged — we only swap
+  /// the hue.
   private var spineBackgroundColor: Color {
     guard distanceFromOpen != nil else {
       return Color.primary.opacity(0.06)
     }
     let multiplier = isHovering && !isOpen ? 0.8 : accentProximityMultiplier
-    return Color.accentColor.opacity(0.20 * multiplier)
+    return effectiveTintColor.opacity(0.20 * multiplier)
+  }
+
+  /// Repo's pinned color, or `.accentColor` when none — used as the
+  /// proximity-tint base and as the icon tint in the header.
+  private var effectiveTintColor: Color {
+    appearance.color?.color ?? .accentColor
+  }
+
+  private var appearance: RepositoryAppearance {
+    repositoryAppearances[book.repositoryID] ?? .empty
   }
 
   /// Active-tab highlight fades more gently than the spine background —
@@ -122,7 +152,13 @@ struct ShelfSpineView: View {
 
   @ViewBuilder
   private var bookContextMenu: some View {
+    Button {
+      onOpenRepositorySettings()
+    } label: {
+      Text("Repo Settings")
+    }
     if let onCloseBook {
+      Divider()
       Button {
         onCloseBook()
       } label: {
@@ -145,6 +181,7 @@ struct ShelfSpineView: View {
           ShelfSpineControlButton(
             systemImage: "plus",
             label: "New Tab",
+            shortcut: ghosttyShortcuts.display(for: "new_tab"),
             action: onNewTab
           )
         }
@@ -152,6 +189,7 @@ struct ShelfSpineView: View {
           ShelfSpineControlButton(
             systemImage: "square.split.2x1",
             label: "Split Vertically",
+            shortcut: ghosttyShortcuts.display(for: "new_split:right"),
             action: onSplitVertical
           )
         }
@@ -159,11 +197,13 @@ struct ShelfSpineView: View {
           ShelfSpineControlButton(
             systemImage: "square.split.1x2",
             label: "Split Horizontally",
+            shortcut: ghosttyShortcuts.display(for: "new_split:down"),
             action: onSplitHorizontal
           )
         }
       }
       .padding(.horizontal, ShelfMetrics.slotHorizontalPadding)
+      .padding(.top, ShelfMetrics.sectionGap)
       .padding(.bottom, ShelfMetrics.slotSpacing)
     }
   }
@@ -173,13 +213,17 @@ struct ShelfSpineView: View {
     Button(action: onOpenBook) {
       ShelfSpineHeader(
         book: book,
-        hasAggregatedNotification: terminalState?.hasUnseenNotification == true
+        hasAggregatedNotification: terminalState?.hasUnseenNotification == true,
+        icon: appearance.icon,
+        iconTint: effectiveTintColor,
+        repositoryRootURL: URL(fileURLWithPath: book.repositoryID)
       )
       .frame(maxWidth: .infinity)
       .contentShape(.rect)
     }
     .buttonStyle(.plain)
     .contextMenu { bookContextMenu }
+    .help(book.displayName)
   }
 
   @ViewBuilder
@@ -217,6 +261,7 @@ struct ShelfSpineView: View {
           hotkeyIndex: hotkeyIndex,
           isActive: terminalState.tabManager.selectedTabId == tab.id,
           hasUnseenNotification: terminalState.hasUnseenNotification(for: tab.id),
+          activeHighlightTint: effectiveTintColor,
           activeHighlightAlpha: activeTabHighlightAlpha,
           onTap: { onSelectTab(tab.id) },
           onClose: { terminalState.closeTab(tab.id) }
@@ -236,7 +281,7 @@ struct ShelfSpineView: View {
       }
     }
     .padding(.horizontal, ShelfMetrics.slotHorizontalPadding)
-    .padding(.top, ShelfMetrics.slotSpacing)
+    .padding(.top, ShelfMetrics.sectionGap)
   }
 
 }
@@ -244,18 +289,82 @@ struct ShelfSpineView: View {
 private struct ShelfSpineHeader: View {
   let book: ShelfBook
   let hasAggregatedNotification: Bool
+  let icon: RepositoryIconSource?
+  let iconTint: Color
+  let repositoryRootURL: URL
+
+  /// Reserved slot for the top decoration (icon and/or notification),
+  /// sized at the maximum expected configuration (14pt icon plus a
+  /// 6pt badge nudged 3pt outward at the top-trailing corner).
+  /// Holding the slot at a constant size — whether or not an icon is
+  /// set — keeps every spine's header at the same total height so the
+  /// rotated titles align horizontally across the shelf row. When the
+  /// repo has no icon AND no notification, the slot is just empty
+  /// reserved space.
+  private let slotSize: CGFloat = 18
+  private let iconSize: CGFloat = 14
+  private let badgeSize: CGFloat = 6
+  private let badgeOffset: CGFloat = 3
 
   var body: some View {
-    VStack(spacing: 6) {
-      Circle()
-        .fill(.orange)
-        .frame(width: ShelfMetrics.aggregatedDotSize, height: ShelfMetrics.aggregatedDotSize)
-        .opacity(hasAggregatedNotification ? 1 : 0)
-        .accessibilityLabel("Unread notifications")
-        .accessibilityHidden(!hasAggregatedNotification)
-        .padding(.top, 6)
+    VStack(spacing: 8) {
+      slot
       rotatedTitle
     }
+    .padding(.top, 8)
+  }
+
+  /// Three rendering paths driven by the (icon, notification) matrix:
+  /// - icon set: render the icon, hang the notification on it as a
+  ///   small badge in the top-trailing corner (macOS app-icon style).
+  /// - no icon, has notification: fall back to the original
+  ///   standalone orange dot, centered in the slot.
+  /// - no icon, no notification: slot stays empty but reserved.
+  @ViewBuilder
+  private var slot: some View {
+    ZStack {
+      Color.clear
+        .frame(width: slotSize, height: slotSize)
+
+      if let icon {
+        RepositoryIconImage(
+          icon: icon,
+          repositoryRootURL: repositoryRootURL,
+          tintColor: iconTint,
+          size: iconSize
+        )
+        .overlay(alignment: .topTrailing) {
+          if hasAggregatedNotification {
+            notificationBadge
+          }
+        }
+      } else if hasAggregatedNotification {
+        Circle()
+          .fill(.orange)
+          .frame(
+            width: ShelfMetrics.aggregatedDotSize,
+            height: ShelfMetrics.aggregatedDotSize
+          )
+      }
+    }
+    .accessibilityElement()
+    .accessibilityLabel(hasAggregatedNotification ? "Unread notifications" : "")
+    .accessibilityHidden(!hasAggregatedNotification)
+  }
+
+  /// Notification dot rendered as a corner badge over the icon. The
+  /// thin dark stroke keeps the orange visible on light spine
+  /// backgrounds; without it the badge would disappear on
+  /// orange-tinted repos.
+  @ViewBuilder
+  private var notificationBadge: some View {
+    Circle()
+      .fill(.orange)
+      .frame(width: badgeSize, height: badgeSize)
+      .overlay {
+        Circle().stroke(Color.black.opacity(0.25), lineWidth: 0.5)
+      }
+      .offset(x: badgeOffset, y: -badgeOffset)
   }
 
   /// Composed title rendered vertically (top-to-bottom reading direction).
@@ -294,6 +403,12 @@ private struct ShelfSpineTabSlot: View {
   let hotkeyIndex: Int?
   let isActive: Bool
   let hasUnseenNotification: Bool
+  /// Hue used for the active-tab background fill — repo color when
+  /// the owning book has one pinned, otherwise `Color.accentColor`.
+  /// Threaded from the spine so the active-tab indicator stays in
+  /// the same color family as the surrounding spine background
+  /// instead of clashing with a contrasting accent.
+  let activeHighlightTint: Color
   /// Absolute alpha for the active-tab accent fill, supplied by the
   /// enclosing spine so it can fade with proximity on its own curve
   /// (which decays more gently than the spine background — selection
@@ -377,7 +492,7 @@ private struct ShelfSpineTabSlot: View {
         .fill(Color.orange.opacity(0.3))
     } else if isActive {
       RoundedRectangle(cornerRadius: ShelfMetrics.slotCornerRadius, style: .continuous)
-        .fill(Color.accentColor.opacity(activeHighlightAlpha))
+        .fill(activeHighlightTint.opacity(activeHighlightAlpha))
     } else {
       Color.clear
     }
@@ -393,6 +508,7 @@ private struct ShelfSpineTabSlot: View {
 private struct ShelfSpineControlButton: View {
   let systemImage: String
   let label: String
+  let shortcut: String?
   let action: () -> Void
 
   var body: some View {
@@ -405,7 +521,12 @@ private struct ShelfSpineControlButton: View {
         .accessibilityHidden(true)
     }
     .buttonStyle(.plain)
-    .help(label)
+    .help(helpText)
+  }
+
+  private var helpText: String {
+    guard let shortcut else { return label }
+    return "\(label) (\(shortcut))"
   }
 }
 
@@ -418,6 +539,11 @@ enum ShelfMetrics {
   static let slotCornerRadius: CGFloat = 5
   static let slotSpacing: CGFloat = 3
   static let slotHorizontalPadding: CGFloat = 3
+  /// Vertical gap between major spine sections (header → tab list,
+  /// tab list → bottom controls). Larger than `slotSpacing` so the
+  /// rotated title doesn't crowd into the first tab and the last tab
+  /// doesn't crowd into the divider above the `+` button.
+  static let sectionGap: CGFloat = 10
   static let aggregatedDotSize: CGFloat = 6
   /// Max pre-rotation width (i.e. visual height after 90° rotation) of the
   /// spine header title. Texts longer than this get middle-truncated.

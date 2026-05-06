@@ -6,6 +6,91 @@ import Testing
 
 @MainActor
 struct RepositorySectionViewTests {
+  @Test func sidebarHeaderActionCollapsesWhenAnyExpandableRepositoryIsOpen() {
+    let gitRepository = Repository(
+      id: "/tmp/git",
+      rootURL: URL(fileURLWithPath: "/tmp/git"),
+      name: "git",
+      kind: .git,
+      worktrees: []
+    )
+    let plainRepository = Repository(
+      id: "/tmp/plain",
+      rootURL: URL(fileURLWithPath: "/tmp/plain"),
+      name: "plain",
+      kind: .plain,
+      worktrees: []
+    )
+    let expandableIDs = SidebarListView.expandableRepositoryIDs(
+      in: [gitRepository, plainRepository]
+    )
+
+    #expect(expandableIDs == [gitRepository.id])
+    #expect(
+      SidebarListView.repositoryListHeaderAction(
+        expandedRepoIDs: [],
+        expandableRepositoryIDs: []
+      )
+        == .expandAll
+    )
+    #expect(
+      SidebarListView.repositoryListHeaderAction(
+        expandedRepoIDs: [],
+        expandableRepositoryIDs: expandableIDs
+      )
+        == .expandAll
+    )
+    #expect(
+      SidebarListView.repositoryListHeaderAction(
+        expandedRepoIDs: [gitRepository.id],
+        expandableRepositoryIDs: expandableIDs
+      )
+        == .collapseAll
+    )
+    #expect(
+      SidebarListView.repositoryListHeaderAction(
+        expandedRepoIDs: [gitRepository.id, plainRepository.id],
+        expandableRepositoryIDs: expandableIDs
+      )
+        == .collapseAll
+    )
+    #expect(
+      SidebarListView.repositoryListHeaderAction(
+        expandedRepoIDs: [plainRepository.id],
+        expandableRepositoryIDs: expandableIDs
+      )
+        == .expandAll
+    )
+  }
+
+  @Test func sidebarHeaderAlwaysShows() {
+    #expect(SidebarListView.showsRepositoryListHeader(repositoryCount: 0))
+    #expect(SidebarListView.showsRepositoryListHeader(repositoryCount: 1))
+    #expect(SidebarListView.showsRepositoryListHeader(repositoryCount: 11))
+  }
+
+  @Test func explicitSelectionIncludesPrimarySelectedWorktree() {
+    let worktree = Worktree(
+      id: "/tmp/repo/wt",
+      name: "wt",
+      detail: "detail",
+      workingDirectory: URL(fileURLWithPath: "/tmp/repo/wt"),
+      repositoryRootURL: URL(fileURLWithPath: "/tmp/repo")
+    )
+    let repository = Repository(
+      id: "/tmp/repo",
+      rootURL: URL(fileURLWithPath: "/tmp/repo"),
+      name: "repo",
+      kind: .git,
+      worktrees: [worktree]
+    )
+    var state = RepositoriesFeature.State()
+    state.repositories = [repository]
+    state.selection = .worktree(worktree.id)
+
+    #expect(SidebarListView.selectedWorktreeIDs(in: state) == [worktree.id])
+  }
+
   @Test func openTabCountForGitRepositorySumsAllWorktrees() {
     let manager = WorktreeTerminalManager(runtime: GhosttyRuntime())
     let repositoryRootURL = URL(fileURLWithPath: "/tmp/repo")

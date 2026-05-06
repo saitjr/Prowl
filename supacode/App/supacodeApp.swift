@@ -130,9 +130,7 @@ struct SupacodeApp: App {
           options.environment = environment
           if let releaseName { options.releaseName = releaseName }
           options.tracesSampleRate = 0.05
-          options.enableAppHangTracking = true
-          options.appHangTimeoutInterval = 3
-          options.beforeSend = SentryEventFilter.filterSystemHang
+          options.enableAppHangTracking = false
         }
       }
       if initialSettings.analyticsEnabled,
@@ -195,7 +193,7 @@ struct SupacodeApp: App {
         preconditionFailure("ghostty_init failed")
       }
     }
-    let runtime = GhosttyRuntime()
+    let runtime = GhosttyRuntime(initialColorScheme: initialSettings.appearanceMode.colorScheme)
     _ghostty = State(initialValue: runtime)
     let shortcuts = GhosttyShortcutManager(runtime: runtime)
     _ghosttyShortcuts = State(initialValue: shortcuts)
@@ -632,7 +630,10 @@ struct SupacodeApp: App {
 
   var body: some Scene {
     Window("Prowl", id: "main") {
-      GhosttyColorSchemeSyncView(ghostty: ghostty) {
+      GhosttyColorSchemeSyncView(
+        ghostty: ghostty,
+        preferredColorScheme: store.settings.appearanceMode.colorScheme
+      ) {
         ContentView(store: store, terminalManager: terminalManager)
           .environment(ghosttyShortcuts)
           .environment(commandKeyObserver)

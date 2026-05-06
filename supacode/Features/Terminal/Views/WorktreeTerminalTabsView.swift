@@ -1,8 +1,6 @@
 import AppKit
 import SwiftUI
 
-private let terminalTabsLogger = SupaLogger("TerminalTabs")
-
 struct WorktreeTerminalTabsView: View {
   let worktree: Worktree
   let manager: WorktreeTerminalManager
@@ -45,7 +43,10 @@ struct WorktreeTerminalTabsView: View {
       )
       if let selectedId = state.tabManager.selectedTabId {
         TerminalTabContentStack(tabs: state.tabManager.tabs, selectedTabId: selectedId) { tabId in
-          TerminalSplitTreeAXContainer(tree: state.splitTree(for: tabId)) { operation in
+          TerminalSplitTreeAXContainer(
+            tree: state.splitTree(for: tabId),
+            focusedSurfaceID: state.focusedSurfaceId(in: tabId)
+          ) { operation in
             state.performSplitOperation(operation, in: tabId)
           }
         }
@@ -84,33 +85,13 @@ struct WorktreeTerminalTabsView: View {
         state.focusSelectedTab()
       }
       let activity = resolvedWindowActivity
-      terminalTabsLogger.info(
-        "[CanvasExit] onAppear worktree=\(worktree.id) "
-          + "selectedTab=\(state.tabManager.selectedTabId?.rawValue.uuidString ?? "nil") "
-          + "autoFocus=\(shouldAutoFocusTerminal) "
-          + "windowKey=\(activity.isKeyWindow) windowVisible=\(activity.isVisible)"
-      )
       state.syncFocus(windowIsKey: activity.isKeyWindow, windowIsVisible: activity.isVisible)
     }
-    .onDisappear {
-      let activity = resolvedWindowActivity
-      terminalTabsLogger.info(
-        "[CanvasExit] onDisappear worktree=\(worktree.id) "
-          + "selectedTab=\(state.tabManager.selectedTabId?.rawValue.uuidString ?? "nil") "
-          + "windowKey=\(activity.isKeyWindow) windowVisible=\(activity.isVisible)"
-      )
-    }
-    .onChange(of: state.tabManager.selectedTabId) { _, newValue in
+    .onChange(of: state.tabManager.selectedTabId) { _, _ in
       if shouldAutoFocusTerminal {
         state.focusSelectedTab()
       }
       let activity = resolvedWindowActivity
-      terminalTabsLogger.info(
-        "[CanvasExit] selectedTabChanged worktree=\(worktree.id) "
-          + "selectedTab=\(newValue?.rawValue.uuidString ?? "nil") "
-          + "autoFocus=\(shouldAutoFocusTerminal) "
-          + "windowKey=\(activity.isKeyWindow) windowVisible=\(activity.isVisible)"
-      )
       state.syncFocus(windowIsKey: activity.isKeyWindow, windowIsVisible: activity.isVisible)
     }
   }

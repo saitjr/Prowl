@@ -1,4 +1,5 @@
 import AppKit
+import Sharing
 import SwiftUI
 
 struct CanvasView: View {
@@ -6,8 +7,14 @@ struct CanvasView: View {
   @Environment(\.resolvedKeybindings) private var resolvedKeybindings
 
   let terminalManager: WorktreeTerminalManager
+  /// Per-repo display titles resolved by the parent reducer. Used to
+  /// override the folder-derived `Repository.name` on each card title
+  /// bar without subscribing to per-repo settings files on the
+  /// per-frame canvas hot path.
+  var repositoryCustomTitles: [Repository.ID: String] = [:]
   var onExitToTab: () -> Void = {}
   @State private var layoutStore = CanvasLayoutStore()
+  @Shared(.repositoryAppearances) private var repositoryAppearances
 
   @State private var canvasOffset: CGSize = .zero
   @State private var lastCanvasOffset: CGSize = .zero
@@ -18,6 +25,7 @@ struct CanvasView: View {
   @State private var activeResize: [TerminalTabID: ActiveResize] = [:]
   @State private var hasPerformedInitialFit = false
   @State private var viewportSize: CGSize = .zero
+  @State private var showsCanvasHelp = false
 
   private let minCardWidth: CGFloat = 300
   private let minCardHeight: CGFloat = 200
@@ -25,13 +33,22 @@ struct CanvasView: View {
   private let maxCardHeight: CGFloat = 1600
   private let titleBarHeight: CGFloat = 28
   private let cardSpacing: CGFloat = 20
+  /// Reserved height at the bottom of the viewport for the help button and
+  /// layout toolbar so cards don't sit underneath them after auto-fit.
+  /// Cards end up shifted upward by half of this amount.
+  private let bottomToolbarReserve: CGFloat = 50
 
   var body: some View {
     let selectAllCanvasShortcut = AppShortcuts.resolvedShortcut(
       for: AppShortcuts.CommandID.selectAllCanvasCards,
       in: resolvedKeybindings
     )
-    CanvasScrollContainer(offset: $canvasOffset, lastOffset: $lastCanvasOffset) {
+    CanvasScrollContainer(
+      offset: $canvasOffset,
+      lastOffset: $lastCanvasOffset,
+      scale: $canvasScale,
+      lastScale: $lastCanvasScale
+    ) {
       GeometryReader { _ in
         let activeStates = terminalManager.activeWorktreeStates
         let allCardKeys = collectCardKeys(from: activeStates)
@@ -72,10 +89,16 @@ struct CanvasView: View {
               let screenCenter = screenPosition(for: resized.center)
               let cardTotalHeight = resized.size.height + titleBarHeight
 
+              let repositoryAppearance = appearance(for: state.repositoryRootURL)
+              let resolvedRepositoryName = repositoryDisplayName(for: state.repositoryRootURL)
               CanvasCardView(
-                repositoryName: Repository.name(for: state.repositoryRootURL),
+                repositoryName: resolvedRepositoryName,
                 worktreeName: tab.title,
+                repositoryIcon: repositoryAppearance.icon,
+                repositoryColor: repositoryAppearance.color?.color,
+                repositoryRootURL: state.repositoryRootURL,
                 tree: tree,
+                focusedSurfaceID: state.focusedSurfaceId(in: tab.id),
                 isFocused: selectionState.primaryTabID == tab.id,
                 isSelected: selectionState.selectedTabIDs.contains(tab.id),
                 hasUnseenNotification: state.hasUnseenNotification(for: tab.id),
@@ -159,6 +182,9 @@ struct CanvasView: View {
     }
     .overlay(alignment: .bottomTrailing) {
       canvasToolbar
+    }
+    .overlay(alignment: .bottomLeading) {
+      canvasHelpButton
     }
     .onKeyPress(.escape) {
       guard selectionState.isBroadcasting else { return .ignored }
@@ -389,7 +415,7 @@ struct CanvasView: View {
 
     guard minX.isFinite else { return }
 
-    let padding: CGFloat = 40
+    let padding: CGFloat = 30
     let bboxW = maxX - minX + padding * 2
     let bboxH = maxY - minY + padding * 2
     let bboxCenterX = (minX + maxX) / 2
@@ -399,7 +425,7 @@ struct CanvasView: View {
 
     canvasOffset = CGSize(
       width: canvasSize.width / 2 - bboxCenterX * newScale,
-      height: canvasSize.height / 2 - bboxCenterY * newScale
+      height: (canvasSize.height - bottomToolbarReserve) / 2 - bboxCenterY * newScale
     )
     canvasScale = newScale
     lastCanvasScale = newScale
@@ -416,6 +442,60 @@ struct CanvasView: View {
       layouts.removeValue(forKey: key)
     }
     layoutStore.cardLayouts = layouts
+  }
+
+  private var canvasHelpButton: some View {
+    Button {
+      showsCanvasHelp.toggle()
+    } label: {
+      Image(systemName: "questionmark.circle")
+        .font(.body)
+        .accessibilityLabel("Canvas navigation help")
+    }
+    .buttonStyle(.bordered)
+    .help("Canvas navigation help")
+    .popover(isPresented: $showsCanvasHelp, arrowEdge: .bottom) {
+      canvasHelpContent
+    }
+    .padding()
+  }
+
+  private var canvasHelpContent: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      Text("Canvas Navigation")
+        .font(.headline)
+
+      VStack(alignment: .leading, spacing: 12) {
+        canvasHelpRow(
+          icon: "plus.magnifyingglass",
+          title: "Zoom in/out",
+          detail: "⌘ + scroll, or pinch gesture"
+        )
+        canvasHelpRow(
+          icon: "hand.draw",
+          title: "Pan canvas",
+          detail: "Drag empty area, middle-click drag, or two-finger swipe"
+        )
+      }
+    }
+    .padding()
+    .frame(width: 320, alignment: .leading)
+  }
+
+  private func canvasHelpRow(icon: String, title: String, detail: String) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 10) {
+      Image(systemName: icon)
+        .foregroundStyle(.secondary)
+        .frame(width: 18)
+        .accessibilityHidden(true)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(title).font(.callout).fontWeight(.medium)
+        Text(detail)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
   }
 
   private var canvasToolbar: some View {
@@ -700,6 +780,34 @@ struct CanvasView: View {
     // surfaces. Cleanup of non-selected worktrees is handled by
     // setSelectedWorktreeID in the async exit flow.
   }
+
+  /// Looks up the user-pinned `RepositoryAppearance` for a given repo
+  /// root URL by deriving the canonical `Repository.ID` (the
+  /// path-policy-normalized path string) and querying the @Shared
+  /// dict. Returns `.empty` when no entry exists, which keeps cards
+  /// visually identical to before the appearance feature shipped.
+  private func appearance(for repositoryRootURL: URL) -> RepositoryAppearance {
+    let id = repositoryID(for: repositoryRootURL)
+    return repositoryAppearances[id] ?? .empty
+  }
+
+  /// Resolves the user-defined display title for the repo at this root
+  /// URL, falling back to `Repository.name(for:)` (folder name) when no
+  /// custom title was set. Reads from the static dictionary populated
+  /// by the parent reducer — no per-call `@Shared` subscription on the
+  /// canvas hot path.
+  private func repositoryDisplayName(for repositoryRootURL: URL) -> String {
+    let id = repositoryID(for: repositoryRootURL)
+    return repositoryCustomTitles[id] ?? Repository.name(for: repositoryRootURL)
+  }
+
+  /// Mirrors the same path normalization the `Repository.ID` is built
+  /// from, so dict lookups match what the reducer stores.
+  private func repositoryID(for repositoryRootURL: URL) -> Repository.ID {
+    PathPolicy.normalizePath(
+      repositoryRootURL.path(percentEncoded: false), resolvingSymlinks: true
+    ) ?? repositoryRootURL.path(percentEncoded: false)
+  }
 }
 
 private struct ActiveResize {
@@ -716,6 +824,8 @@ private struct ActiveResize {
 private struct CanvasScrollContainer<Content: View>: NSViewRepresentable {
   @Binding var offset: CGSize
   @Binding var lastOffset: CGSize
+  @Binding var scale: CGFloat
+  @Binding var lastScale: CGFloat
   @ViewBuilder var content: Content
 
   func makeCoordinator() -> CanvasScrollCoordinator {
@@ -740,6 +850,8 @@ private struct CanvasScrollContainer<Content: View>: NSViewRepresentable {
   func updateNSView(_ nsView: CanvasScrollContainerView, context: Context) {
     context.coordinator.offset = $offset
     context.coordinator.lastOffset = $lastOffset
+    context.coordinator.scale = $scale
+    context.coordinator.lastScale = $lastScale
     if let hosting = nsView.subviews.first as? NSHostingView<Content> {
       hosting.rootView = content
     }
@@ -749,6 +861,8 @@ private struct CanvasScrollContainer<Content: View>: NSViewRepresentable {
 private class CanvasScrollCoordinator {
   var offset: Binding<CGSize> = .constant(.zero)
   var lastOffset: Binding<CGSize> = .constant(.zero)
+  var scale: Binding<CGFloat> = .constant(1.0)
+  var lastScale: Binding<CGFloat> = .constant(1.0)
 
   func handleScroll(deltaX: CGFloat, deltaY: CGFloat) {
     let current = offset.wrappedValue
@@ -758,6 +872,61 @@ private class CanvasScrollCoordinator {
     )
     offset.wrappedValue = newOffset
     lastOffset.wrappedValue = newOffset
+  }
+
+  func handleZoom(deltaY: CGFloat, anchor: CGPoint, isPrecise: Bool) {
+    let result = CanvasZoomMath.zoom(
+      currentScale: scale.wrappedValue,
+      currentOffset: offset.wrappedValue,
+      deltaY: deltaY,
+      anchor: anchor,
+      isPrecise: isPrecise
+    )
+    scale.wrappedValue = result.scale
+    lastScale.wrappedValue = result.scale
+    offset.wrappedValue = result.offset
+    lastOffset.wrappedValue = result.offset
+  }
+
+  func setOffset(_ newOffset: CGSize) {
+    offset.wrappedValue = newOffset
+    lastOffset.wrappedValue = newOffset
+  }
+}
+
+/// Pure zoom math, extracted for testability.
+enum CanvasZoomMath {
+  static let minScale: CGFloat = 0.25
+  static let maxScale: CGFloat = 2.0
+
+  struct Result: Equatable {
+    let scale: CGFloat
+    let offset: CGSize
+  }
+
+  /// Compute the new scale and offset for a Cmd+wheel zoom step.
+  /// Keeps the canvas point under `anchor` fixed under the cursor:
+  /// `screen = canvas * scale + offset` ⇒ `canvas = (anchor - offset) / scale`.
+  static func zoom(
+    currentScale: CGFloat,
+    currentOffset: CGSize,
+    deltaY: CGFloat,
+    anchor: CGPoint,
+    isPrecise: Bool
+  ) -> Result {
+    let sensitivity: CGFloat = isPrecise ? 0.0025 : 0.005
+    let factor = exp(deltaY * sensitivity)
+    let newScale = max(minScale, min(maxScale, currentScale * factor))
+    guard newScale != currentScale else {
+      return Result(scale: currentScale, offset: currentOffset)
+    }
+    let canvasX = (anchor.x - currentOffset.width) / currentScale
+    let canvasY = (anchor.y - currentOffset.height) / currentScale
+    let newOffset = CGSize(
+      width: anchor.x - canvasX * newScale,
+      height: anchor.y - canvasY * newScale
+    )
+    return Result(scale: newScale, offset: newOffset)
   }
 }
 
@@ -775,7 +944,15 @@ private class CanvasScrollContainerView: NSView {
   /// cursor now sits on a focused terminal.
   private var bounceTimer: Timer?
 
+  // MARK: - Middle-click pan
+  private var middleButtonMonitor: Any?
+  private var isMiddlePanning = false
+  private var middlePanStartLocation: NSPoint = .zero
+  private var middlePanStartOffset: CGSize = .zero
+  private var hasPushedPanCursor = false
+
   override func scrollWheel(with event: NSEvent) {
+    if handleZoomEventIfNeeded(event) { return }
     if event.phase == .began {
       startPanning()
     }
@@ -784,6 +961,21 @@ private class CanvasScrollContainerView: NSView {
       return
     }
     super.scrollWheel(with: event)
+  }
+
+  /// If the event is a Cmd+scroll, route it to canvas zoom and report `true`.
+  /// Used by both the direct `scrollWheel` override and the local monitor so
+  /// pressing Cmd mid-gesture switches behavior immediately.
+  fileprivate func handleZoomEventIfNeeded(_ event: NSEvent) -> Bool {
+    guard event.modifierFlags.contains(.command), event.scrollingDeltaY != 0 else { return false }
+    let viewLocation = convert(event.locationInWindow, from: nil)
+    let anchor = CGPoint(x: viewLocation.x, y: bounds.height - viewLocation.y)
+    scrollCoordinator?.handleZoom(
+      deltaY: event.scrollingDeltaY,
+      anchor: anchor,
+      isPrecise: event.hasPreciseScrollingDeltas
+    )
+    return true
   }
 
   // MARK: - Pan lifecycle
@@ -801,6 +993,9 @@ private class CanvasScrollContainerView: NSView {
   private func installMonitor() {
     scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
       guard let self, event.window === self.window else { return event }
+
+      // Cmd toggled mid-gesture — switch to zoom for this event.
+      if self.handleZoomEventIfNeeded(event) { return nil }
 
       // --- New gesture ------------------------------------------------
       if event.phase == .began {
@@ -875,8 +1070,83 @@ private class CanvasScrollContainerView: NSView {
     }
   }
 
+  // MARK: - Middle-click pan
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    if window != nil {
+      installMiddleButtonMonitor()
+    } else {
+      tearDownMiddleButtonMonitor()
+    }
+  }
+
+  private func installMiddleButtonMonitor() {
+    guard middleButtonMonitor == nil else { return }
+    let mask: NSEvent.EventTypeMask = [.otherMouseDown, .otherMouseDragged, .otherMouseUp]
+    middleButtonMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+      guard let self, event.window === self.window, event.buttonNumber == 2 else { return event }
+
+      switch event.type {
+      case .otherMouseDown:
+        let location = self.convert(event.locationInWindow, from: nil)
+        guard self.bounds.contains(location) else { return event }
+        self.beginMiddlePan(at: event.locationInWindow)
+        return nil
+      case .otherMouseDragged:
+        guard self.isMiddlePanning else { return event }
+        self.updateMiddlePan(to: event.locationInWindow)
+        return nil
+      case .otherMouseUp:
+        guard self.isMiddlePanning else { return event }
+        self.endMiddlePan()
+        return nil
+      default:
+        return event
+      }
+    }
+  }
+
+  private func beginMiddlePan(at windowLocation: NSPoint) {
+    isMiddlePanning = true
+    middlePanStartLocation = windowLocation
+    middlePanStartOffset = scrollCoordinator?.offset.wrappedValue ?? .zero
+    if !hasPushedPanCursor {
+      NSCursor.closedHand.push()
+      hasPushedPanCursor = true
+    }
+  }
+
+  private func updateMiddlePan(to windowLocation: NSPoint) {
+    let deltaX = windowLocation.x - middlePanStartLocation.x
+    // Window Y grows upward; canvas offset Y grows downward (SwiftUI top-left).
+    let deltaY = middlePanStartLocation.y - windowLocation.y
+    let newOffset = CGSize(
+      width: middlePanStartOffset.width + deltaX,
+      height: middlePanStartOffset.height + deltaY
+    )
+    scrollCoordinator?.setOffset(newOffset)
+  }
+
+  private func endMiddlePan() {
+    isMiddlePanning = false
+    if hasPushedPanCursor {
+      NSCursor.pop()
+      hasPushedPanCursor = false
+    }
+  }
+
+  private func tearDownMiddleButtonMonitor() {
+    if isMiddlePanning { endMiddlePan() }
+    if let monitor = middleButtonMonitor {
+      middleButtonMonitor = nil
+      DispatchQueue.main.async { MainActor.assumeIsolated { NSEvent.removeMonitor(monitor) } }
+    }
+  }
+
   override func removeFromSuperview() {
     tearDownMonitor()
+    tearDownMiddleButtonMonitor()
     super.removeFromSuperview()
   }
 }

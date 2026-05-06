@@ -10,6 +10,7 @@ nonisolated let worktreeCreationProgressLineLimit = 200
 nonisolated let worktreeCreationProgressUpdateStride = 20
 nonisolated let archiveScriptProgressLineLimit = 200
 private let secondsPerDay: Double = 86_400
+private let repositoriesLogger = SupaLogger("RepositoriesFeature")
 
 nonisolated struct WorktreeCreationProgressUpdateThrottle {
   private let stride: Int
@@ -145,6 +146,7 @@ struct RepositoriesFeature {
     case pinWorktree(Worktree.ID)
     case unpinWorktree(Worktree.ID)
     case worktreeNotificationReceived(Worktree.ID)
+    case setSidebarDragActive(Bool)
     case setMoveNotifiedWorktreeToTop(Bool)
   }
 
@@ -186,6 +188,13 @@ struct RepositoriesFeature {
     var repositoryRoots: [URL] = []
     var repositoryOrderIDs: [Repository.ID] = []
     var loadFailuresByID: [Repository.ID: String] = [:]
+    /// User-defined display titles indexed by `Repository.ID`. Resolved
+    /// once on repo discovery (and refreshed when settings change) so
+    /// hot-path display sites — sidebar, shelf spine, canvas card,
+    /// toolbar notifications, settings list — read a plain dictionary
+    /// instead of subscribing to `@Shared(.repositorySettings(...))`
+    /// per row per frame. Absent entries fall back to `repository.name`.
+    var repositoryCustomTitles: [Repository.ID: String] = [:]
     var selection: SidebarSelection?
     var worktreeInfoByID: [Worktree.ID: WorktreeInfoEntry] = [:]
     var worktreeOrderByRepository: [Repository.ID: [Worktree.ID]] = [:]
@@ -227,6 +236,8 @@ struct RepositoriesFeature {
     var sidebarSelectedWorktreeIDs: Set<Worktree.ID> = []
     var nextPendingSidebarRevealID = 0
     var pendingSidebarReveal: PendingSidebarReveal?
+    var isSidebarDragActive = false
+    var pendingSidebarNotifyReorderIDs: [Worktree.ID] = []
     @Shared(.appStorage("sidebarCollapsedRepositoryIDs")) var collapsedRepositoryIDs: [Repository.ID] = []
     @Presents var worktreeCreationPrompt: WorktreeCreationPromptFeature.State?
     @Presents var alert: AlertState<Alert>?
@@ -275,6 +286,10 @@ struct RepositoriesFeature {
     case refreshWorktrees
     case reloadRepositories(animated: Bool)
     case repositoriesLoaded([Repository], failures: [LoadFailure], roots: [URL], animated: Bool)
+    case refreshAllCustomTitles
+    case refreshCustomTitle(URL)
+    case customTitlesLoaded([Repository.ID: String])
+    case customTitleUpdated(Repository.ID, String?)
     case codeHostsDetected([Repository.ID: CodeHost])
     case selectArchivedWorktrees
     case selectCanvas
@@ -632,6 +647,52 @@ struct RepositoriesFeature {
           }
           return .merge(allEffects)
 
+        case .refreshAllCustomTitles:
+          // Fan out across the current repository list, reading each
+          // per-repo settings file via `@Shared`. Runs in a reducer
+          // effect (not in a view body), so even when the first cache
+          // miss triggers a `settingsFile` write the resulting view
+          // re-render can't loop back into this action.
+          let repositoriesForTitleRefresh = Array(state.repositories)
+          return .run { send in
+            var dict: [Repository.ID: String] = [:]
+            for repository in repositoriesForTitleRefresh {
+              @Shared(.repositorySettings(repository.rootURL)) var settings
+              let trimmed = settings.customTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+              if let trimmed, !trimmed.isEmpty {
+                dict[repository.id] = trimmed
+              }
+            }
+            await send(.customTitlesLoaded(dict))
+          }
+
+        case .refreshCustomTitle(let rootURL):
+          guard let repository = state.repositories.first(where: { $0.rootURL == rootURL }) else {
+            return .none
+          }
+          let repositoryID = repository.id
+          return .run { send in
+            @Shared(.repositorySettings(rootURL)) var settings
+            let trimmed = settings.customTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalized = (trimmed?.isEmpty ?? true) ? nil : trimmed
+            await send(.customTitleUpdated(repositoryID, normalized))
+          }
+
+        case .customTitlesLoaded(let dict):
+          guard state.repositoryCustomTitles != dict else { return .none }
+          state.repositoryCustomTitles = dict
+          return .none
+
+        case .customTitleUpdated(let id, let title):
+          if let title {
+            guard state.repositoryCustomTitles[id] != title else { return .none }
+            state.repositoryCustomTitles[id] = title
+          } else {
+            guard state.repositoryCustomTitles[id] != nil else { return .none }
+            state.repositoryCustomTitles.removeValue(forKey: id)
+          }
+          return .none
+
         case .codeHostsDetected(let codeHostByRepositoryID):
           let knownIDs = Set(state.repositories.ids)
           var updated = state.codeHostByRepositoryID.filter { knownIDs.contains($0.key) }
@@ -793,6 +854,10 @@ struct RepositoriesFeature {
           return .none
 
         case .selectRepository(let repositoryID):
+          // `inout state` cannot be captured by a closure, so use the
+          // begin/end token API rather than the `interval` helper.
+          let selectRepoToken = repositoriesLogger.beginInterval("reducer.selectRepository")
+          defer { repositoriesLogger.endInterval(selectRepoToken) }
           guard let repositoryID, state.repositories[id: repositoryID] != nil else { return .none }
           state.selection = .repository(repositoryID)
           state.sidebarSelectedWorktreeIDs = []
@@ -803,6 +868,8 @@ struct RepositoriesFeature {
           return .send(.delegate(.selectedWorktreeChanged(state.selectedTerminalWorktree)))
 
         case .selectWorktree(let worktreeID, let focusTerminal):
+          let selectWtToken = repositoriesLogger.beginInterval("reducer.selectWorktree")
+          defer { repositoriesLogger.endInterval(selectWtToken) }
           setSingleWorktreeSelection(worktreeID, state: &state)
           if focusTerminal, let worktreeID {
             state.pendingTerminalFocusWorktreeIDs.insert(worktreeID)
@@ -1956,7 +2023,7 @@ extension RepositoriesFeature.State {
   }
 }
 
-struct WorktreeRowSections {
+struct WorktreeRowSections: Equatable {
   let main: WorktreeRowModel?
   let pinned: [WorktreeRowModel]
   let pending: [WorktreeRowModel]

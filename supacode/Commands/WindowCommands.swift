@@ -5,6 +5,7 @@ struct WindowCommands: Commands {
   let resolvedKeybindings: ResolvedKeybindingMap
   let hotkeyWindowShortcut: KeyboardShortcut?
   let hotkeyWindowShortcutDisplay: String?
+  @FocusedValue(\.closeTabAction) private var closeTabAction
   @FocusedValue(\.closeSurfaceAction) private var closeSurfaceAction
   @FocusedValue(\.selectPreviousTerminalTabAction) private var selectPreviousTerminalTabAction
   @FocusedValue(\.selectNextTerminalTabAction) private var selectNextTerminalTabAction
@@ -17,7 +18,12 @@ struct WindowCommands: Commands {
 
   var body: some Commands {
     let closeSurfaceHotkey = ghosttyShortcuts.keyboardShortcut(for: "close_surface")
-    let isCloseSurfaceOverlapping = closeSurfaceHotkey?.key == "w" && closeSurfaceHotkey?.modifiers == .command
+    let closeTabHotkey = ghosttyShortcuts.keyboardShortcut(for: "close_tab")
+    let closeWindowShortcut = WindowCloseShortcutPolicy.closeWindowShortcut(
+      closeSurfaceShortcut: closeSurfaceHotkey,
+      closeTabShortcut: closeTabHotkey,
+      hasTerminalCloseTarget: closeTabAction != nil || closeSurfaceAction != nil
+    )
 
     CommandGroup(replacing: .saveItem) {
       Button("Close Window", systemImage: "xmark") {
@@ -25,7 +31,7 @@ struct WindowCommands: Commands {
       }
       .modifier(
         KeyboardShortcutModifier(
-          shortcut: !isCloseSurfaceOverlapping || closeSurfaceAction == nil ? .init("w") : nil
+          shortcut: closeWindowShortcut
         )
       )
     }
@@ -136,6 +142,23 @@ struct WindowCommands: Commands {
         .disabled(selectTerminalPaneRightAction == nil)
       }
     }
+  }
+}
+
+enum WindowCloseShortcutPolicy {
+  static func closeWindowShortcut(
+    closeSurfaceShortcut: KeyboardShortcut?,
+    closeTabShortcut: KeyboardShortcut?,
+    hasTerminalCloseTarget: Bool
+  ) -> KeyboardShortcut? {
+    if hasTerminalCloseTarget && (isCommandW(closeSurfaceShortcut) || isCommandW(closeTabShortcut)) {
+      return nil
+    }
+    return KeyboardShortcut("w")
+  }
+
+  private static func isCommandW(_ shortcut: KeyboardShortcut?) -> Bool {
+    shortcut?.key == "w" && shortcut?.modifiers == .command
   }
 }
 

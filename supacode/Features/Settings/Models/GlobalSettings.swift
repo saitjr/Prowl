@@ -28,6 +28,7 @@ nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
   var archivedAutoDeletePeriod: AutoDeletePeriod?
   var keybindingUserOverrides: KeybindingUserOverrideStore
   var defaultViewMode: DefaultViewMode
+  var dimUnfocusedSplits: Bool
 
   static let `default` = GlobalSettings(
     appearanceMode: .dark,
@@ -58,7 +59,8 @@ nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     terminalFontSize: nil,
     hotkeyWindow: .default,
     keybindingUserOverrides: .empty,
-    defaultViewMode: .normal
+    defaultViewMode: .normal,
+    dimUnfocusedSplits: true
   )
 
   init(
@@ -90,7 +92,8 @@ nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     terminalFontSize: Float32? = nil,
     hotkeyWindow: HotkeyWindowSettings = .default,
     keybindingUserOverrides: KeybindingUserOverrideStore = .empty,
-    defaultViewMode: DefaultViewMode = .normal
+    defaultViewMode: DefaultViewMode = .normal,
+    dimUnfocusedSplits: Bool = true
   ) {
     self.appearanceMode = appearanceMode
     self.defaultEditorID = defaultEditorID
@@ -121,6 +124,7 @@ nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     self.hotkeyWindow = hotkeyWindow.normalized
     self.keybindingUserOverrides = keybindingUserOverrides
     self.defaultViewMode = defaultViewMode
+    self.dimUnfocusedSplits = dimUnfocusedSplits
   }
 
   func encode(to encoder: any Encoder) throws {
@@ -154,6 +158,7 @@ nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     try container.encode(hotkeyWindow, forKey: .hotkeyWindow)
     try container.encode(keybindingUserOverrides, forKey: .keybindingUserOverrides)
     try container.encode(defaultViewMode, forKey: .defaultViewMode)
+    try container.encode(dimUnfocusedSplits, forKey: .dimUnfocusedSplits)
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -186,6 +191,7 @@ nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     case hotkeyWindow
     case keybindingUserOverrides
     case defaultViewMode
+    case dimUnfocusedSplits
     // Legacy key for migration
     case automaticallyArchiveMergedWorktrees
   }
@@ -281,5 +287,8 @@ nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     defaultViewMode =
       try container.decodeIfPresent(DefaultViewMode.self, forKey: .defaultViewMode)
       ?? Self.default.defaultViewMode
+    dimUnfocusedSplits =
+      try container.decodeIfPresent(Bool.self, forKey: .dimUnfocusedSplits)
+      ?? Self.default.dimUnfocusedSplits
   }
 }

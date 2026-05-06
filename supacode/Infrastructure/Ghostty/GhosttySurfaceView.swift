@@ -6,7 +6,6 @@ import QuartzCore
 import SwiftUI
 
 private let surfaceLogger = SupaLogger("Surface")
-private let surfaceHostLogger = SupaLogger("SurfaceHost")
 
 final class GhosttySurfaceView: NSView, Identifiable {
   struct OcclusionState {
@@ -129,7 +128,6 @@ final class GhosttySurfaceView: NSView, Identifiable {
   private var lastSurfaceFocus: Bool?
   private var eventMonitor: Any?
   private var notificationObservers: [NSObjectProtocol] = []
-  private var workspaceObservers: [NSObjectProtocol] = []
   private var prevPressureStage: Int = 0
   private var isBackgroundOpaqueOverride = false
   private var suppressNextLeftMouseUp = false
@@ -284,7 +282,6 @@ final class GhosttySurfaceView: NSView, Identifiable {
       }
     }
     registerForDraggedTypes(Array(Self.dropTypes))
-    registerWorkspaceObservers()
 
     eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyUp, .leftMouseDown]) {
       [weak self] event in
@@ -301,7 +298,6 @@ final class GhosttySurfaceView: NSView, Identifiable {
       NSEvent.removeMonitor(eventMonitor)
     }
     clearNotificationObservers()
-    clearWorkspaceObservers()
     let id = ObjectIdentifier(self)
     MainActor.assumeIsolated {
       SecureInput.shared.removeScoped(id)
@@ -402,50 +398,6 @@ final class GhosttySurfaceView: NSView, Identifiable {
       })
   }
 
-  private func registerWorkspaceObservers() {
-    let center = NSWorkspace.shared.notificationCenter
-    workspaceObservers.append(
-      center.addObserver(
-        forName: NSWorkspace.willSleepNotification,
-        object: nil,
-        queue: .main
-      ) { [weak self] _ in
-        Task { @MainActor [weak self] in
-          self?.logLifecycleState("workspaceWillSleep")
-        }
-      })
-    workspaceObservers.append(
-      center.addObserver(
-        forName: NSWorkspace.didWakeNotification,
-        object: nil,
-        queue: .main
-      ) { [weak self] _ in
-        Task { @MainActor [weak self] in
-          self?.logLifecycleState("workspaceDidWake")
-        }
-      })
-    workspaceObservers.append(
-      center.addObserver(
-        forName: NSWorkspace.screensDidSleepNotification,
-        object: nil,
-        queue: .main
-      ) { [weak self] _ in
-        Task { @MainActor [weak self] in
-          self?.logLifecycleState("screensDidSleep")
-        }
-      })
-    workspaceObservers.append(
-      center.addObserver(
-        forName: NSWorkspace.screensDidWakeNotification,
-        object: nil,
-        queue: .main
-      ) { [weak self] _ in
-        Task { @MainActor [weak self] in
-          self?.logLifecycleState("screensDidWake")
-        }
-      })
-  }
-
   private func windowDidChangeScreen() {
     guard let surface, let screen = window?.screen else { return }
     let displayID =
@@ -462,14 +414,6 @@ final class GhosttySurfaceView: NSView, Identifiable {
       center.removeObserver(observer)
     }
     notificationObservers.removeAll()
-  }
-
-  private func clearWorkspaceObservers() {
-    let center = NSWorkspace.shared.notificationCenter
-    for observer in workspaceObservers {
-      center.removeObserver(observer)
-    }
-    workspaceObservers.removeAll()
   }
 
   override func viewDidMoveToWindow() {
@@ -498,28 +442,12 @@ final class GhosttySurfaceView: NSView, Identifiable {
     updateContentScale()
     updateSurfaceSize()
     applyWindowBackgroundAppearance()
-    logLifecycleState("viewDidMoveToWindow")
     handleAttachmentChange()
   }
 
   override func viewDidMoveToSuperview() {
     super.viewDidMoveToSuperview()
-    logLifecycleState("viewDidMoveToSuperview")
     handleAttachmentChange()
-  }
-
-  override func viewWillMove(toSuperview newSuperview: NSView?) {
-    if newSuperview == nil {
-      logDetachIntent(event: "viewWillMoveToSuperview")
-    }
-    super.viewWillMove(toSuperview: newSuperview)
-  }
-
-  override func viewWillMove(toWindow newWindow: NSWindow?) {
-    if newWindow == nil {
-      logDetachIntent(event: "viewWillMoveToWindow")
-    }
-    super.viewWillMove(toWindow: newWindow)
   }
 
   override func viewDidChangeBackingProperties() {
@@ -1197,13 +1125,6 @@ final class GhosttySurfaceView: NSView, Identifiable {
     // Re-parenting can temporarily detach the Metal layer from the visible
     // tree and pause Ghostty's renderer. Invalidate the applied cache so the
     // currently desired occlusion value is sent again after reattachment.
-    surfaceLogger.info(
-      "[CanvasExit] attachmentChange surface=\(debugID) "
-        + "desired=\(String(describing: occlusionState.desired)) "
-        + "attached=\(hasAttachedSuperview) window=\(hasAttachedWindow) "
-        + "host=\(scrollWrapper?.hostKind.rawValue ?? "none") "
-        + "wrapper=\(scrollWrapper?.debugIdentifier ?? "none")"
-    )
     _ = occlusionState.invalidateForAttachmentChange()
     if superview == nil {
       DispatchQueue.main.async { [weak self] in
@@ -1229,40 +1150,8 @@ final class GhosttySurfaceView: NSView, Identifiable {
     reapplyOcclusionIfNeeded()
   }
 
-  private func logLifecycleState(_ event: String) {
-    let windowVisible = window?.occlusionState.contains(.visible) ?? false
-    let windowKey = window?.isKeyWindow ?? false
-    let firstResponderMatches = window?.firstResponder === self
-    surfaceLogger.info(
-      "[TerminalWake] event=\(event) surface=\(debugID) hasSurface=\(surface != nil) "
-        + "attached=\(hasAttachedSuperview) window=\(hasAttachedWindow) "
-        + "desired=\(String(describing: occlusionState.desired)) "
-        + "focused=\(focused) firstResponder=\(firstResponderMatches) "
-        + "bounds=\(Int(bounds.width))x\(Int(bounds.height)) "
-        + "backing=\(Int(lastBackingSize.width))x\(Int(lastBackingSize.height)) "
-        + "windowVisible=\(windowVisible) windowKey=\(windowKey) "
-        + "host=\(scrollWrapper?.hostKind.rawValue ?? "none") "
-        + "wrapper=\(scrollWrapper?.debugIdentifier ?? "none")"
-    )
-  }
-
-  private func logDetachIntent(event: String) {
-    let stack = Thread.callStackSymbols.prefix(12).joined(separator: " | ")
-    surfaceLogger.info(
-      "[CanvasExit] detachIntent event=\(event) surface=\(debugID) "
-        + "host=\(scrollWrapper?.hostKind.rawValue ?? "none") "
-        + "wrapper=\(scrollWrapper?.debugIdentifier ?? "none") "
-        + "superview=\(String(describing: superview)) window=\(window != nil) "
-        + "stack=\(stack)"
-    )
-  }
-
   private func reapplyOcclusionIfNeeded() {
     guard isReadyToApplyOcclusion, let desired = occlusionState.desired else { return }
-    surfaceLogger.info(
-      "[CanvasExit] reapplyOcclusion surface=\(debugID) desired=\(desired) "
-        + "attached=\(hasAttachedSuperview) window=\(hasAttachedWindow)"
-    )
     setOcclusion(desired)
   }
 
@@ -2471,11 +2360,6 @@ final class GhosttySurfaceScrollView: NSView {
     super.init(frame: .zero)
     addSubview(scrollView)
     surfaceView.scrollWrapper = self
-    surfaceHostLogger.info(
-      "[CanvasExit] hostInit wrapper=\(debugID) host=\(hostKind.rawValue) "
-        + "surface=\(surfaceView.debugIdentifierForLogging) "
-        + "attached=\(isSurfaceAttachedToDocumentView)"
-    )
     refreshAppearance()
 
     scrollView.contentView.postsBoundsChangedNotifications = true
@@ -2554,12 +2438,9 @@ final class GhosttySurfaceScrollView: NSView {
   override var mouseDownCanMoveWindow: Bool { false }
 
   isolated deinit {
-    surfaceHostLogger.info(
-      "[CanvasExit] hostDeinit wrapper=\(debugID) host=\(hostKind.rawValue) "
-        + "surface=\(surfaceView.debugIdentifierForLogging) "
-        + "attached=\(isSurfaceAttachedToDocumentView)"
-    )
-    observers.forEach { NotificationCenter.default.removeObserver($0) }
+    for observer in observers {
+      NotificationCenter.default.removeObserver(observer)
+    }
   }
 
   override func layout() {
@@ -2594,11 +2475,12 @@ final class GhosttySurfaceScrollView: NSView {
     }
     guard !isSurfaceAttachedToDocumentView || surfaceView.scrollWrapper !== self else { return }
     guard hostKind == .terminal else { return }
+    // Only adopt an orphaned surface; never steal it from a live host such as Canvas.
     guard surfaceView.superview == nil || isSurfaceAttachedToDocumentView else { return }
     if let currentOwner = surfaceView.scrollWrapper, currentOwner !== self, currentOwner.shouldKeepSurfaceOwnership {
       return
     }
-    surfaceHostLogger.info(
+    surfaceLogger.info(
       "[CanvasExit] hostReattach wrapper=\(debugID) host=\(hostKind.rawValue) "
         + "surface=\(surfaceView.debugIdentifierForLogging) "
         + "currentSuperview=\(String(describing: surfaceView.superview)) "
@@ -2608,7 +2490,7 @@ final class GhosttySurfaceScrollView: NSView {
       documentView.addSubview(surfaceView)
     }
     surfaceView.scrollWrapper = self
-    surfaceHostLogger.info(
+    surfaceLogger.info(
       "[CanvasExit] hostReattachComplete wrapper=\(debugID) host=\(hostKind.rawValue) "
         + "surface=\(surfaceView.debugIdentifierForLogging) "
         + "superview=\(surfaceView.superview != nil) "
@@ -2712,7 +2594,9 @@ final class GhosttySurfaceScrollView: NSView {
   }
 
   override func updateTrackingAreas() {
-    trackingAreas.forEach { removeTrackingArea($0) }
+    for trackingArea in trackingAreas {
+      removeTrackingArea(trackingArea)
+    }
     super.updateTrackingAreas()
     guard let scroller = scrollView.verticalScroller else { return }
     addTrackingArea(

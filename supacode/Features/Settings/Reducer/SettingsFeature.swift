@@ -34,6 +34,7 @@ struct SettingsFeature {
     var hotkeyWindow: HotkeyWindowSettings
     var keybindingUserOverrides: KeybindingUserOverrideStore
     var defaultViewMode: DefaultViewMode
+    var dimUnfocusedSplits: Bool
     var cliInstallStatus: CLIInstallStatus = .notInstalled
     var cliInstallShowAlert: Bool = true
     var selection: SettingsSection? = .general
@@ -72,6 +73,7 @@ struct SettingsFeature {
       hotkeyWindow = settings.hotkeyWindow.normalized
       keybindingUserOverrides = settings.keybindingUserOverrides
       defaultViewMode = settings.defaultViewMode
+      dimUnfocusedSplits = settings.dimUnfocusedSplits
     }
 
     var globalSettings: GlobalSettings {
@@ -106,7 +108,8 @@ struct SettingsFeature {
         terminalFontSize: terminalFontSize,
         hotkeyWindow: hotkeyWindow.normalized,
         keybindingUserOverrides: keybindingUserOverrides,
-        defaultViewMode: defaultViewMode
+        defaultViewMode: defaultViewMode,
+        dimUnfocusedSplits: dimUnfocusedSplits
       )
     }
   }
@@ -212,6 +215,7 @@ struct SettingsFeature {
         state.hotkeyWindow = normalizedSettings.hotkeyWindow.normalized
         state.keybindingUserOverrides = normalizedSettings.keybindingUserOverrides
         state.defaultViewMode = normalizedSettings.defaultViewMode
+        state.dimUnfocusedSplits = normalizedSettings.dimUnfocusedSplits
         state.syncGlobalDefaults(from: normalizedSettings)
         return .send(.delegate(.settingsChanged(normalizedSettings)))
 

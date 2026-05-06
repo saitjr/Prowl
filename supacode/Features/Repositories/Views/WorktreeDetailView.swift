@@ -48,7 +48,10 @@ struct WorktreeDetailView: View {
     let runScriptEnabled = hasActiveTerminalTarget
     let runScriptIsRunning = selectedTerminalWorktree.flatMap { state.runScriptStatusByWorktreeID[$0.id] } == true
     let customCommands = state.selectedCustomCommands
-    let notificationGroups = repositories.toolbarNotificationGroups(terminalManager: terminalManager)
+    let notificationGroups = repositories.toolbarNotificationGroups(
+      terminalManager: terminalManager,
+      customTitles: repositories.repositoryCustomTitles
+    )
     let unseenNotificationWorktreeCount = notificationGroups.reduce(0) { count, repository in
       count + repository.unseenWorktreeCount
     }
@@ -221,6 +224,7 @@ struct WorktreeDetailView: View {
     if repositories.isShowingCanvas {
       CanvasView(
         terminalManager: terminalManager,
+        repositoryCustomTitles: repositories.repositoryCustomTitles,
         onExitToTab: {
           store.send(.repositories(.toggleCanvas))
         })
@@ -260,7 +264,10 @@ struct WorktreeDetailView: View {
         }
       }
     } else if let selectedRepository = repositories.selectedRepository {
-      RepositoryDetailView(repository: selectedRepository)
+      RepositoryDetailView(
+        repository: selectedRepository,
+        customTitle: repositories.repositoryCustomTitles[selectedRepository.id]
+      )
     } else {
       EmptyStateView(store: store.scope(state: \.repositories, action: \.repositories))
     }
@@ -273,8 +280,8 @@ struct WorktreeDetailView: View {
     content
       .focusedSceneValue(\.openSelectedWorktreeAction, actions.openSelectedWorktree)
       .focusedSceneValue(\.newTerminalAction, actions.newTerminal)
-      .focusedValue(\.closeTabAction, actions.closeTab)
-      .focusedValue(\.closeSurfaceAction, actions.closeSurface)
+      .focusedSceneValue(\.closeTabAction, actions.closeTab)
+      .focusedSceneValue(\.closeSurfaceAction, actions.closeSurface)
       .focusedSceneValue(\.resetFontSizeAction, actions.resetFontSize)
       .focusedSceneValue(\.increaseFontSizeAction, actions.increaseFontSize)
       .focusedSceneValue(\.decreaseFontSizeAction, actions.decreaseFontSize)
@@ -346,11 +353,47 @@ struct WorktreeDetailView: View {
       }
     }
 
+    func closeTabAction() -> (() -> Void)? {
+      if repositories.isShowingCanvas {
+        guard let worktreeID = terminalManager.canvasFocusedWorktreeID,
+          let state = terminalManager.stateIfExists(for: worktreeID),
+          state.canCloseFocusedTab
+        else {
+          return nil
+        }
+        return { _ = state.closeFocusedTab() }
+      }
+      guard hasActiveWorktree, let selectedWorktree = repositories.selectedTerminalWorktree,
+        terminalManager.stateIfExists(for: selectedWorktree.id)?.canCloseFocusedTab == true
+      else {
+        return nil
+      }
+      return { store.send(.closeTab) }
+    }
+
+    func closeSurfaceAction() -> (() -> Void)? {
+      if repositories.isShowingCanvas {
+        guard let worktreeID = terminalManager.canvasFocusedWorktreeID,
+          let state = terminalManager.stateIfExists(for: worktreeID),
+          state.canCloseFocusedSurface
+        else {
+          return nil
+        }
+        return { _ = state.closeFocusedSurface() }
+      }
+      guard hasActiveWorktree, let selectedWorktree = repositories.selectedTerminalWorktree,
+        terminalManager.stateIfExists(for: selectedWorktree.id)?.canCloseFocusedSurface == true
+      else {
+        return nil
+      }
+      return { store.send(.closeSurface) }
+    }
+
     return FocusedActions(
       openSelectedWorktree: action(.openSelectedWorktree),
       newTerminal: action(.newTerminal),
-      closeTab: canvasAction { $0.closeFocusedTab() } ?? action(.closeTab),
-      closeSurface: canvasAction { $0.closeFocusedSurface() } ?? action(.closeSurface),
+      closeTab: closeTabAction(),
+      closeSurface: closeSurfaceAction(),
       resetFontSize: fontSizeAction("reset_font_size"),
       increaseFontSize: fontSizeAction("increase_font_size:1"),
       decreaseFontSize: fontSizeAction("decrease_font_size:1"),
@@ -911,7 +954,7 @@ private struct WorktreeToolbarPreview: View {
             key: "u",
             modifiers: UserCustomShortcutModifiers()
           )
-        ),
+        )
       ],
       isUpdateAvailable: true,
       availableUpdateVersion: "2026.5.1"

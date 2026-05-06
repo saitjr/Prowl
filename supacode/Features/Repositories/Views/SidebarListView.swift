@@ -2,185 +2,97 @@ import ComposableArchitecture
 import SwiftUI
 
 struct SidebarListView: View {
+  enum RepositoryListHeaderAction: Equatable {
+    case expandAll
+    case collapseAll
+
+    var title: String {
+      switch self {
+      case .expandAll:
+        return "Expand All"
+      case .collapseAll:
+        return "Collapse All"
+      }
+    }
+
+    var systemImageName: String {
+      "chevron.right"
+    }
+
+    var rotation: Angle {
+      switch self {
+      case .expandAll:
+        return .zero
+      case .collapseAll:
+        return .degrees(90)
+      }
+    }
+  }
+
   @Bindable var store: StoreOf<RepositoriesFeature>
   @Binding var expandedRepoIDs: Set<Repository.ID>
   @Binding var sidebarSelections: Set<SidebarSelection>
   let terminalManager: WorktreeTerminalManager
   @FocusState private var isSidebarFocused: Bool
   @State private var isDragActive = false
+  @State private var draggingRepositoryID: Repository.ID?
+  @State private var targetedRepositoryDropDestination: Int?
 
   var body: some View {
     let state = store.state
     let hotkeyRows = state.orderedWorktreeRows(includingRepositoryIDs: expandedRepoIDs)
-    let orderedRoots = state.orderedRepositoryRoots()
-    let selectedWorktreeIDs = Set(sidebarSelections.compactMap(\.worktreeID))
-    let selection = Binding<Set<SidebarSelection>>(
-      get: {
-        var nextSelections = sidebarSelections
-        if state.isShowingCanvas {
-          nextSelections = [.canvas]
-        } else if state.isShowingArchivedWorktrees {
-          nextSelections = [.archivedWorktrees]
-        } else {
-          nextSelections.remove(.archivedWorktrees)
-          nextSelections.remove(.canvas)
-          if let selectedRepository = state.selectedRepository, selectedRepository.kind == .plain {
-            nextSelections = [.repository(selectedRepository.id)]
-          } else if let selectedWorktreeID = state.selectedWorktreeID {
-            nextSelections.insert(.worktree(selectedWorktreeID))
-          }
-        }
-        return nextSelections
-      },
-      set: { newValue in
-        let nextSelections = newValue
-        let repositorySelections: [Repository.ID] = nextSelections.compactMap { selection in
-          guard case .repository(let repositoryID) = selection else { return nil }
-          return repositoryID
-        }
-
-        if nextSelections.contains(.canvas) {
-          sidebarSelections = [.canvas]
-          store.send(.selectCanvas)
-          return
-        }
-
-        if nextSelections.contains(.archivedWorktrees) {
-          sidebarSelections = [.archivedWorktrees]
-          store.send(.selectArchivedWorktrees)
-          return
-        }
-
-        if let repositoryID = repositorySelections.first {
-          guard let repository = state.repositories[id: repositoryID] else {
-            return
-          }
-          if repository.capabilities.supportsWorktrees {
-            withAnimation(.easeOut(duration: 0.2)) {
-              if expandedRepoIDs.contains(repositoryID) {
-                expandedRepoIDs.remove(repositoryID)
-              } else {
-                expandedRepoIDs.insert(repositoryID)
-              }
-            }
-            sidebarSelections = []
-          } else {
-            sidebarSelections = [.repository(repositoryID)]
-            store.send(.selectRepository(repositoryID))
-          }
-          return
-        }
-
-        let worktreeIDs = Set(nextSelections.compactMap(\.worktreeID))
-        guard !worktreeIDs.isEmpty else {
-          sidebarSelections = []
-          store.send(.selectWorktree(nil))
-          return
-        }
-        sidebarSelections = Set(worktreeIDs.map(SidebarSelection.worktree))
-        if let selectedWorktreeID = state.selectedWorktreeID, worktreeIDs.contains(selectedWorktreeID) {
-          return
-        }
-        let nextPrimarySelection =
-          hotkeyRows.map(\.id).first(where: worktreeIDs.contains)
-          ?? worktreeIDs.first
-        store.send(.selectWorktree(nextPrimarySelection, focusTerminal: true))
-      }
+    let presentation = state.sidebarPresentation(expandedRepositoryIDs: expandedRepoIDs)
+    let expandableRepositoryIDs = Self.expandableRepositoryIDs(in: state.repositories)
+    let repositoryListHeaderAction = Self.repositoryListHeaderAction(
+      expandedRepoIDs: expandedRepoIDs,
+      expandableRepositoryIDs: expandableRepositoryIDs
     )
-    let repositoriesByID = Dictionary(uniqueKeysWithValues: store.repositories.map { ($0.id, $0) })
+    let repositoryItems = presentation.items.filter(\.isRepositoryOrderItem)
+    let showsRepositoryListHeader = presentation.items.contains { item in
+      if case .listHeader = item {
+        return true
+      }
+      return false
+    }
+    let selectedWorktreeIDs = Self.selectedWorktreeIDs(in: state)
     let pendingSidebarReveal = state.pendingSidebarReveal
 
     ScrollViewReader { scrollProxy in
-      List(selection: selection) {
-        if orderedRoots.isEmpty {
-          let repositories = store.repositories
-          ForEach(Array(repositories.enumerated()), id: \.element.id) { index, repository in
-            RepositorySectionView(
-              repository: repository,
-              hasTopSpacing: index > 0,
-              isDragActive: isDragActive,
-              hotkeyRows: hotkeyRows,
-              selectedWorktreeIDs: selectedWorktreeIDs,
-              expandedRepoIDs: $expandedRepoIDs,
-              store: store,
-              terminalManager: terminalManager
+      ScrollView {
+        LazyVStack(spacing: 0) {
+          if showsRepositoryListHeader {
+            repositoryListHeader(
+              action: repositoryListHeaderAction,
+              expandableRepositoryIDs: expandableRepositoryIDs
             )
-            .listRowInsets(EdgeInsets())
           }
-        } else {
-          let orderedRows = Array(orderedRoots.enumerated()).map { index, rootURL in
-            (
+
+          if repositoryItems.isEmpty {
+            emptyRepositoryHint()
+          }
+
+          ForEach(Array(repositoryItems.enumerated()), id: \.element.id) { index, item in
+            repositoryItemView(
+              item,
               index: index,
-              rootURL: rootURL,
-              repositoryID: rootURL.standardizedFileURL.path(percentEncoded: false)
+              repositoryOrderIDs: presentation.repositoryOrderIDs,
+              hotkeyRows: hotkeyRows,
+              selectedWorktreeIDs: selectedWorktreeIDs
             )
-          }
-          ForEach(orderedRows, id: \.repositoryID) { row in
-            let index = row.index
-            let rootURL = row.rootURL
-            let repositoryID = row.repositoryID
-            if let failureMessage = state.loadFailuresByID[repositoryID] {
-              let name = Repository.name(for: rootURL.standardizedFileURL)
-              let path = rootURL.standardizedFileURL.path(percentEncoded: false)
-              FailedRepositoryRow(
-                name: name,
-                path: path,
-                showFailure: {
-                  let message = "\(path)\n\n\(failureMessage)"
-                  store.send(.presentAlert(title: "Unable to load \(name)", message: message))
-                },
-                removeRepository: {
-                  store.send(.repositoryManagement(.removeFailedRepository(repositoryID)))
-                }
-              )
-              .padding(.horizontal, 12)
-              .overlay(alignment: .top) {
-                if index > 0 {
-                  Rectangle()
-                    .fill(.secondary)
-                    .frame(height: 1)
-                    .frame(maxWidth: .infinity)
-                    .accessibilityHidden(true)
-                }
-              }
-              .listRowInsets(EdgeInsets())
-            } else if let repository = repositoriesByID[repositoryID] {
-              RepositorySectionView(
-                repository: repository,
-                hasTopSpacing: index > 0,
-                isDragActive: isDragActive,
-                hotkeyRows: hotkeyRows,
-                selectedWorktreeIDs: selectedWorktreeIDs,
-                expandedRepoIDs: $expandedRepoIDs,
-                store: store,
-                terminalManager: terminalManager
-              )
-              .listRowInsets(EdgeInsets())
-            }
-          }
-          .onMove { offsets, destination in
-            store.send(.worktreeOrdering(.repositoriesMoved(offsets, destination)))
           }
         }
+        .padding(.vertical, 2)
       }
-      .listStyle(.sidebar)
       .scrollIndicators(.never)
       .frame(minWidth: 220)
+      .background(.bar)
       .onDragSessionUpdated { session in
         if case .ended = session.phase {
-          if isDragActive {
-            isDragActive = false
-          }
+          endSidebarDrag()
           return
         }
         if case .dataTransferCompleted = session.phase {
-          if isDragActive {
-            isDragActive = false
-          }
-          return
-        }
-        if !isDragActive {
-          isDragActive = true
+          endSidebarDrag()
         }
       }
       .safeAreaInset(edge: .top) {
@@ -210,33 +122,217 @@ struct SidebarListView: View {
         store.send(.repositoryManagement(.openRepositories(fileURLs)))
         return true
       }
-      .onKeyPress { keyPress in
-        guard !keyPress.characters.isEmpty else { return .ignored }
-        let isNavigationKey =
-          keyPress.key == .upArrow
-          || keyPress.key == .downArrow
-          || keyPress.key == .leftArrow
-          || keyPress.key == .rightArrow
-          || keyPress.key == .home
-          || keyPress.key == .end
-          || keyPress.key == .pageUp
-          || keyPress.key == .pageDown
-        if isNavigationKey { return .ignored }
-        let hasCommandModifier = keyPress.modifiers.contains(.command)
-        if hasCommandModifier { return .ignored }
-        guard let worktreeID = store.selectedWorktreeID,
-          state.sidebarSelectedWorktreeIDs.count == 1,
-          state.sidebarSelectedWorktreeIDs.contains(worktreeID),
-          let terminalState = terminalManager.stateIfExists(for: worktreeID)
-        else { return .ignored }
-        terminalState.focusAndInsertText(keyPress.characters)
-        return .handled
-      }
       .focused($isSidebarFocused)
+      .onAppear {
+        resetSidebarDrag()
+      }
       .task(id: pendingSidebarReveal?.id) {
         await revealPendingSidebarWorktree(pendingSidebarReveal, with: scrollProxy)
       }
     }  // ScrollViewReader
+  }
+
+  private func focusTerminalAfterSidebarSelection(worktreeID: Worktree.ID?) {
+    guard let worktreeID else { return }
+    Task { @MainActor [terminalManager] in
+      for _ in 0..<4 {
+        await Task.yield()
+        if let terminalState = terminalManager.stateIfExists(for: worktreeID) {
+          terminalState.focusSelectedTab()
+          return
+        }
+      }
+    }
+  }
+
+  private func repositoryListHeader(
+    action: RepositoryListHeaderAction,
+    expandableRepositoryIDs: Set<Repository.ID>
+  ) -> some View {
+    HStack(spacing: 4) {
+      Text("Repositories")
+        .font(.caption)
+        .foregroundStyle(.tertiary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      Button {
+        store.send(.setOpenPanelPresented(true))
+      } label: {
+        Label("Add Repository", systemImage: "plus")
+          .labelStyle(.iconOnly)
+          .frame(width: 20, height: 20)
+          .contentShape(.rect)
+      }
+      .buttonStyle(.plain)
+      .foregroundStyle(.secondary)
+      .help("Add Repository")
+      if !expandableRepositoryIDs.isEmpty {
+        Button {
+          withAnimation(.easeOut(duration: 0.2)) {
+            switch action {
+            case .expandAll:
+              expandedRepoIDs.formUnion(expandableRepositoryIDs)
+            case .collapseAll:
+              expandedRepoIDs.subtract(expandableRepositoryIDs)
+            }
+          }
+        } label: {
+          Label(action.title, systemImage: action.systemImageName)
+            .labelStyle(.iconOnly)
+            .frame(width: 20, height: 20)
+            .rotationEffect(action.rotation)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help(action.title)
+      }
+    }
+    .frame(maxWidth: .infinity, minHeight: 26, alignment: .center)
+    .padding(.leading, 12)
+    .padding(.trailing, 7)
+    .padding(.top, 2)
+    .padding(.bottom, 4)
+  }
+
+  private func emptyRepositoryHint() -> some View {
+    HStack(spacing: 6) {
+      Spacer(minLength: 0)
+      Text("Add your first repository")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      Image(systemName: "arrow.turn.right.up")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.secondary)
+        .symbolEffect(.pulse, options: .repeating)
+        .accessibilityHidden(true)
+    }
+    .padding(.leading, 12)
+    .padding(.trailing, 14)
+    .padding(.top, 2)
+    .padding(.bottom, 6)
+  }
+
+  @ViewBuilder
+  private func repositoryItemView(
+    _ item: SidebarItem,
+    index: Int,
+    repositoryOrderIDs: [Repository.ID],
+    hotkeyRows: [WorktreeRowModel],
+    selectedWorktreeIDs: Set<Worktree.ID>
+  ) -> some View {
+    Group {
+      switch item {
+      case .repository(let model):
+        if let repository = store.state.repositories[id: model.repositoryID] {
+          RepositorySectionView(
+            repository: repository,
+            hasTopSpacing: index > 0,
+            isDragActive: isDragActive,
+            hotkeyRows: hotkeyRows,
+            selectedWorktreeIDs: selectedWorktreeIDs,
+            expandedRepoIDs: $expandedRepoIDs,
+            store: store,
+            terminalManager: terminalManager,
+            onRepositorySelected: {
+              selectRepository(repository)
+            }
+          )
+          .draggableRepository(
+            id: model.repositoryID,
+            isEnabled: !model.isRemoving,
+            beginDrag: {
+              beginSidebarDrag(repositoryID: model.repositoryID)
+            }
+          )
+        }
+
+      case .failedRepository(let model):
+        FailedRepositoryRow(
+          name: model.name,
+          path: model.path,
+          showFailure: {
+            let message = "\(model.path)\n\n\(model.failureMessage)"
+            store.send(.presentAlert(title: "Unable to load \(model.name)", message: message))
+          },
+          removeRepository: {
+            store.send(.repositoryManagement(.removeFailedRepository(model.id)))
+          }
+        )
+        .padding(.horizontal, 12)
+        .overlay(alignment: .top) {
+          if index > 0 {
+            Rectangle()
+              .fill(.secondary)
+              .frame(height: 1)
+              .frame(maxWidth: .infinity)
+              .accessibilityHidden(true)
+          }
+        }
+        .draggableRepository(
+          id: model.id,
+          isEnabled: model.isReorderable,
+          beginDrag: {
+            beginSidebarDrag(repositoryID: model.id)
+          }
+        )
+
+      case .listHeader, .archivedWorktrees:
+        EmptyView()
+      }
+    }
+    .repositoryDropTarget(
+      index: index,
+      repositoryOrderIDs: repositoryOrderIDs,
+      isEnabled: isDragActive,
+      targetedDestination: $targetedRepositoryDropDestination,
+      actions: SidebarDropTargetActions(
+        draggedItemID: draggingRepositoryID,
+        onDrop: { offsets, destination in
+          withAnimation(.easeOut(duration: 0.2)) {
+            _ = store.send(.worktreeOrdering(.repositoriesMoved(offsets, destination)))
+          }
+        },
+        onDragEnded: endSidebarDrag
+      )
+    )
+  }
+
+  private func beginSidebarDrag(repositoryID: Repository.ID) {
+    guard !isDragActive else { return }
+    draggingRepositoryID = repositoryID
+    isDragActive = true
+    store.send(.worktreeOrdering(.setSidebarDragActive(true)))
+  }
+
+  private func endSidebarDrag() {
+    targetedRepositoryDropDestination = nil
+    draggingRepositoryID = nil
+    isDragActive = false
+    store.send(.worktreeOrdering(.setSidebarDragActive(false)))
+  }
+
+  private func resetSidebarDrag() {
+    targetedRepositoryDropDestination = nil
+    draggingRepositoryID = nil
+    isDragActive = false
+    store.send(.worktreeOrdering(.setSidebarDragActive(false)))
+  }
+
+  private func selectRepository(_ repository: Repository) {
+    if repository.capabilities.supportsWorktrees {
+      withAnimation(.easeOut(duration: 0.2)) {
+        if expandedRepoIDs.contains(repository.id) {
+          expandedRepoIDs.remove(repository.id)
+        } else {
+          expandedRepoIDs.insert(repository.id)
+        }
+      }
+      sidebarSelections = []
+    } else {
+      sidebarSelections = [.repository(repository.id)]
+      store.send(.selectRepository(repository.id))
+      focusTerminalAfterSidebarSelection(worktreeID: store.state.selectedTerminalWorktree?.id)
+    }
   }
 
   @MainActor
@@ -250,9 +346,46 @@ struct SidebarListView: View {
     await Task.yield()
     isSidebarFocused = true
     withAnimation(.easeOut(duration: 0.2)) {
-      scrollProxy.scrollTo(pendingSidebarReveal.worktreeID, anchor: .center)
+      scrollProxy.scrollTo(SidebarScrollID.worktree(pendingSidebarReveal.worktreeID), anchor: .center)
     }
     store.send(.consumePendingSidebarReveal(pendingSidebarReveal.id))
+  }
+
+  static func expandableRepositoryIDs<Repositories: Sequence>(
+    in repositories: Repositories
+  ) -> Set<Repository.ID> where Repositories.Element == Repository {
+    Set(
+      repositories
+        .filter(\.capabilities.supportsWorktrees)
+        .map(\.id)
+    )
+  }
+
+  static func repositoryListHeaderAction(
+    expandedRepoIDs: Set<Repository.ID>,
+    expandableRepositoryIDs: Set<Repository.ID>
+  ) -> RepositoryListHeaderAction {
+    !expandedRepoIDs.isDisjoint(with: expandableRepositoryIDs)
+      ? .collapseAll
+      : .expandAll
+  }
+
+  static func showsRepositoryListHeader(repositoryCount: Int) -> Bool {
+    SidebarPresentation.showsListHeader(repositoryCount: repositoryCount)
+  }
+
+  static func selectedWorktreeIDs(in state: RepositoriesFeature.State) -> Set<Worktree.ID> {
+    var selectedWorktreeIDs = state.sidebarSelectedWorktreeIDs
+    if let selectedWorktreeID = state.selectedWorktreeID {
+      selectedWorktreeIDs.insert(selectedWorktreeID)
+    }
+    return selectedWorktreeIDs
+  }
+}
+
+extension SidebarItem {
+  fileprivate var isRepositoryOrderItem: Bool {
+    repositoryOrderID != nil
   }
 }
 

@@ -66,6 +66,28 @@ struct WorktreeTerminalManagerTests {
     #expect(state.onFontSizeAdjusted != nil)
   }
 
+  @Test func closeTargetAvailabilityFollowsTerminalModelState() {
+    let manager = WorktreeTerminalManager(runtime: GhosttyRuntime())
+    let worktree = makeWorktree()
+    let state = manager.state(for: worktree)
+
+    #expect(state.canCloseFocusedTab == false)
+    #expect(state.canCloseFocusedSurface == false)
+
+    let tabId = state.createTab()
+
+    #expect(tabId != nil)
+    #expect(state.canCloseFocusedTab == true)
+    #expect(state.canCloseFocusedSurface == true)
+
+    if let tabId {
+      state.closeTab(tabId)
+    }
+
+    #expect(state.canCloseFocusedTab == false)
+    #expect(state.canCloseFocusedSurface == false)
+  }
+
   @Test func notificationIndicatorUsesCurrentCountOnStreamStart() async {
     let manager = WorktreeTerminalManager(runtime: GhosttyRuntime())
     let worktree = makeWorktree()
@@ -77,7 +99,7 @@ struct WorktreeTerminalManagerTests {
         title: "Unread",
         body: "body",
         isRead: false
-      ),
+      )
     ]
     state.onNotificationIndicatorChanged?()
     state.notifications = [
@@ -86,7 +108,7 @@ struct WorktreeTerminalManagerTests {
         title: "Read",
         body: "body",
         isRead: true
-      ),
+      )
     ]
 
     let stream = manager.eventStream()
@@ -237,9 +259,9 @@ struct WorktreeTerminalManagerTests {
               title: nil,
               icon: nil,
               splitRoot: .leaf(surfaceID: "9B2F6D8C-44A4-42C5-8F9E-962108301901")
-            ),
+            )
           ]
-        ),
+        )
       ]
     )
     let manager = WorktreeTerminalManager(

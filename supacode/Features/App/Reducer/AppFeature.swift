@@ -335,6 +335,7 @@ struct AppFeature {
           var effects: [Effect<Action>] = [
             .send(.settings(.setSelection(.general))),
             .send(.commandPalette(.pruneRecency(recencyIDs))),
+            .send(.repositories(.refreshAllCustomTitles)),
             .run { _ in
               await terminalClient.send(.prune(ids))
             },
@@ -353,6 +354,7 @@ struct AppFeature {
         }
         var effects: [Effect<Action>] = [
           .send(.commandPalette(.pruneRecency(recencyIDs))),
+          .send(.repositories(.refreshAllCustomTitles)),
           .run { _ in
             await terminalClient.send(.prune(ids))
           },
@@ -391,11 +393,14 @@ struct AppFeature {
           }
           @Shared(.repositorySettings(repository.rootURL)) var repositorySettings
           @Shared(.userRepositorySettings(repository.rootURL)) var userRepositorySettings
+          @Shared(.repositoryAppearances) var repositoryAppearances
           var repoSettingsState = RepositorySettingsFeature.State(
             rootURL: repository.rootURL,
+            repositoryID: repository.id,
             repositoryKind: repository.kind,
             settings: repositorySettings,
-            userSettings: userRepositorySettings
+            userSettings: userRepositorySettings,
+            appearance: repositoryAppearances[repository.id] ?? .empty
           )
           repoSettingsState.globalCopyIgnoredOnWorktreeCreate = state.settings.copyIgnoredOnWorktreeCreate
           repoSettingsState.globalCopyUntrackedOnWorktreeCreate = state.settings.copyUntrackedOnWorktreeCreate
@@ -642,6 +647,15 @@ struct AppFeature {
         let command = customCommand.command
         let closeOnSuccess = customCommand.closeOnSuccess
         let commandName = customCommand.resolvedTitle
+        // Treat the model's "terminal" placeholder (and an empty value)
+        // as "no icon configured", so the auto-detector can still brand
+        // the tab from the command itself. Anything else is a deliberate
+        // user pick and gets pinned for the duration of the run.
+        let commandIcon: String? = {
+          let trimmed = customCommand.systemImage.trimmingCharacters(in: .whitespacesAndNewlines)
+          guard !trimmed.isEmpty, trimmed != "terminal" else { return nil }
+          return trimmed
+        }()
         switch customCommand.execution {
         case .shellScript:
           return .run { _ in
@@ -651,7 +665,8 @@ struct AppFeature {
                 input: command,
                 runSetupScriptIfNew: false,
                 autoCloseOnSuccess: closeOnSuccess,
-                customCommandName: commandName
+                customCommandName: commandName,
+                customCommandIcon: commandIcon
               )
             )
           }
@@ -664,7 +679,8 @@ struct AppFeature {
                 direction: direction,
                 input: command,
                 autoCloseOnSuccess: closeOnSuccess,
-                customCommandName: commandName
+                customCommandName: commandName,
+                customCommandIcon: commandIcon
               )
             )
           }
@@ -773,15 +789,21 @@ struct AppFeature {
         }
 
       case .settings(.repositorySettings(.delegate(.settingsChanged(let rootURL)))):
+        // Always refresh the repo's custom title cache — display sites
+        // (sidebar, shelf, canvas, toolbar, settings list) read it from
+        // `RepositoriesFeature.State.repositoryCustomTitles` rather
+        // than subscribing to the per-repo settings file directly.
+        let refreshCustomTitle = Effect<Action>.send(.repositories(.refreshCustomTitle(rootURL)))
         guard let selectedWorktree = state.repositories.selectedTerminalWorktree,
           selectedWorktree.repositoryRootURL == rootURL
         else {
-          return .none
+          return refreshCustomTitle
         }
         let worktreeID = selectedWorktree.id
         @Shared(.repositorySettings(rootURL)) var repositorySettings
         @Shared(.userRepositorySettings(rootURL)) var userRepositorySettings
         return .concatenate(
+          refreshCustomTitle,
           .send(.worktreeSettingsLoaded(repositorySettings, worktreeID: worktreeID)),
           .send(.worktreeUserSettingsLoaded(userRepositorySettings, worktreeID: worktreeID))
         )
