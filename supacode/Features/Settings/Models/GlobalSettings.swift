@@ -159,6 +159,7 @@ nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     try container.encode(restoreTerminalLayoutOnLaunch, forKey: .restoreTerminalLayoutOnLaunch)
     try container.encodeIfPresent(archivedAutoDeletePeriod?.rawValue, forKey: .archivedAutoDeletePeriod)
     try container.encodeIfPresent(terminalFontSize, forKey: .terminalFontSize)
+    try container.encode(hotkeyWindow, forKey: .hotkeyWindow)
     try container.encode(keybindingUserOverrides, forKey: .keybindingUserOverrides)
     try container.encode(defaultViewMode, forKey: .defaultViewMode)
     try container.encode(dimUnfocusedSplits, forKey: .dimUnfocusedSplits)
@@ -192,6 +193,7 @@ nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     case restoreTerminalLayoutOnLaunch
     case archivedAutoDeletePeriod
     case terminalFontSize
+    case hotkeyWindow
     case keybindingUserOverrides
     case defaultViewMode
     case dimUnfocusedSplits

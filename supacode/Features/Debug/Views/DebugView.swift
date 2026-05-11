@@ -35,12 +35,6 @@ import SwiftUI
       }
       .navigationSplitViewStyle(.balanced)
       .frame(minWidth: 700, minHeight: 500)
-      .background {
-        // Standalone NSWindow doesn't pick up `.preferredColorScheme`
-        // (only WindowGroup scenes do), so route through the same
-        // bridge SettingsView uses to honour the user's appearance.
-        WindowAppearanceSetter(colorScheme: store.settings.appearanceMode.colorScheme)
-      }
     }
   }
 

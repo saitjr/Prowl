@@ -50,10 +50,18 @@ private struct GitCommandError: Error {
 @discardableResult
 private func runGit(_ arguments: [String]) throws -> String {
   let process = Process()
-  process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+  process.executableURL = try resolvedGitExecutableURL()
   process.arguments = arguments
   var environment = ProcessInfo.processInfo.environment
   environment["GIT_CONFIG_GLOBAL"] = "/dev/null"
+  environment["PATH"] = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+  ].joined(separator: ":")
   process.environment = environment
   let pipe = Pipe()
   process.standardOutput = pipe
@@ -66,4 +74,19 @@ private func runGit(_ arguments: [String]) throws -> String {
     throw GitCommandError(output: output)
   }
   return output
+}
+
+private func resolvedGitExecutableURL() throws -> URL {
+  let fileManager = FileManager.default
+  let candidates = [
+    "/opt/homebrew/bin/git",
+    "/usr/local/bin/git",
+    "/usr/bin/git",
+  ]
+
+  if let path = candidates.first(where: fileManager.isExecutableFile(atPath:)) {
+    return URL(fileURLWithPath: path)
+  }
+
+  throw GitCommandError(output: "Could not locate an executable git binary")
 }

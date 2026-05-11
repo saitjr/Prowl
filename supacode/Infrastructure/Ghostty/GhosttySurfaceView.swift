@@ -2429,7 +2429,7 @@ final class GhosttySurfaceScrollView: NSView {
   /// terminal reflow.
   var pinnedSize: CGSize?
 
-  init(surfaceView: GhosttySurfaceView, hostKind: HostKind) {
+  init(surfaceView: GhosttySurfaceView, hostKind: HostKind = .terminal) {
     self.surfaceView = surfaceView
     self.hostKind = hostKind
     scrollView = NSScrollView()
@@ -2555,20 +2555,25 @@ final class GhosttySurfaceScrollView: NSView {
   }
 
   func ensureSurfaceAttached(requiresLiveHost: Bool = true) {
-    guard hostKind == .terminal else { return }
     if requiresLiveHost {
       guard superview != nil || window != nil else { return }
     }
-    guard !isSurfaceAttachedToDocumentView else { return }
+    guard !isSurfaceAttachedToDocumentView || surfaceView.scrollWrapper !== self else { return }
+    guard hostKind == .terminal else { return }
     // Only adopt an orphaned surface; never steal it from a live host such as Canvas.
-    guard surfaceView.superview == nil else { return }
+    guard surfaceView.superview == nil || isSurfaceAttachedToDocumentView else { return }
+    if let currentOwner = surfaceView.scrollWrapper, currentOwner !== self, currentOwner.shouldKeepSurfaceOwnership {
+      return
+    }
     surfaceLogger.info(
       "[CanvasExit] hostReattach wrapper=\(debugID) host=\(hostKind.rawValue) "
         + "surface=\(surfaceView.debugIdentifierForLogging) "
         + "currentSuperview=\(String(describing: surfaceView.superview)) "
         + "wrapperWindow=\(window != nil)"
     )
-    documentView.addSubview(surfaceView)
+    if surfaceView.superview !== documentView {
+      documentView.addSubview(surfaceView)
+    }
     surfaceView.scrollWrapper = self
     surfaceLogger.info(
       "[CanvasExit] hostReattachComplete wrapper=\(debugID) host=\(hostKind.rawValue) "
@@ -2577,6 +2582,11 @@ final class GhosttySurfaceScrollView: NSView {
         + "window=\(surfaceView.window != nil) "
         + "bounds=\(Int(surfaceView.bounds.width))x\(Int(surfaceView.bounds.height))"
     )
+  }
+
+  private var shouldKeepSurfaceOwnership: Bool {
+    guard let window else { return false }
+    return isSurfaceAttachedToDocumentView && window.isVisible && window.occlusionState.contains(.visible)
   }
 
   func updateScrollbar(total: UInt64, offset: UInt64, length: UInt64) {

@@ -130,7 +130,6 @@ struct SupacodeApp: App {
       commandKeyObserver: commandKeyObserver
     )
   }
-
   /// Reads a secret from Info.plist, returning nil when the value is empty or
   /// still contains an unsubstituted `$(VAR)` placeholder (the Makefile did not
   /// inject a value for that key).
@@ -173,6 +172,7 @@ struct SupacodeApp: App {
   @MainActor init() {
     NSWindow.allowsAutomaticWindowTabbing = false
     UserDefaults.standard.set(200, forKey: "NSInitialToolTipDelay")
+    WindowFrameAutosaveSanitizer.sanitizeStoredFrames()
     @Shared(.settingsFile) var settingsFile
     let initialSettings = settingsFile.global
     let initialResolvedKeybindings = KeybindingResolver.resolve(
@@ -639,6 +639,12 @@ struct SupacodeApp: App {
       }
       .onChange(of: store.resolvedKeybindings) { _, newValue in
         syncGhosttyManagedShortcuts(with: newValue)
+      }
+      .onChange(of: store.settings.appearanceMode) { _, newValue in
+        SettingsWindowManager.shared.updateAppearance(colorScheme: newValue.colorScheme)
+        #if DEBUG
+          DebugWindowManager.shared.updateAppearance(colorScheme: newValue.colorScheme)
+        #endif
       }
       .onChange(of: store.settings.hotkeyWindow) { _, newValue in
         HotkeyWindowManager.shared.update(settings: newValue)

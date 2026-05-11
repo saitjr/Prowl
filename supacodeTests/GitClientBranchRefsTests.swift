@@ -64,7 +64,7 @@ struct GitClientBranchRefsTests {
     let calls = await store.calls
     #expect(calls.count == 1)
     let args = calls[0]
-    #expect(args.first == "git")
+    #expect(Array(args.prefix(2)) == ["-C", "/tmp/repo"])
     #expect(args.contains("for-each-ref"))
     #expect(args.contains("refs/heads"))
     #expect(args.contains("--format=%(refname:short)\t%(upstream:short)"))

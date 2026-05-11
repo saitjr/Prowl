@@ -24,6 +24,8 @@ extension RepositoriesFeature {
     state: inout State,
     action: GithubIntegrationAction
   ) -> Effect<Action> {
+    @Dependency(\.continuousClock) var clock
+
     switch action {
     case .delayedPullRequestRefresh(let worktreeID):
       guard let worktree = state.worktree(for: worktreeID),
@@ -35,7 +37,7 @@ extension RepositoriesFeature {
       let repositoryRootURL = worktree.repositoryRootURL
       let worktreeIDs = repository.worktrees.map(\.id)
       return .run { send in
-        try? await ContinuousClock().sleep(for: .seconds(2))
+        try? await clock.sleep(for: .seconds(2))
         await send(
           .worktreeInfoEvent(
             .repositoryPullRequestRefresh(
@@ -140,7 +142,7 @@ extension RepositoriesFeature {
         state.inFlightPullRequestRefreshRepositoryIDs.removeAll()
         return .run { send in
           while !Task.isCancelled {
-            try? await ContinuousClock().sleep(for: githubIntegrationRecoveryInterval)
+            try? await clock.sleep(for: githubIntegrationRecoveryInterval)
             guard !Task.isCancelled else {
               return
             }

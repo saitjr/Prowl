@@ -67,6 +67,20 @@ struct HotkeyWindowSettingsView: View {
           )
           .help("Set the hotkey window height as a percentage of the active display")
 
+          minimumSizeRow(
+            title: "Minimum Width",
+            value: $store.hotkeyWindow.minimumWidth,
+            range: HotkeyWindowSettings.minimumWidthRange
+          )
+          .help("When display metrics look wrong, Prowl will not size the hotkey window narrower than this fallback width")
+
+          minimumSizeRow(
+            title: "Minimum Height",
+            value: $store.hotkeyWindow.minimumHeight,
+            range: HotkeyWindowSettings.minimumHeightRange
+          )
+          .help("When display metrics look wrong, Prowl will not size the hotkey window shorter than this fallback height")
+
           LabeledContent("Alignment") {
             Text("Centered horizontally, bottom aligned")
               .foregroundStyle(.secondary)
@@ -146,7 +160,11 @@ struct HotkeyWindowSettingsView: View {
   private var layoutSummary: String {
     let width = Int((store.hotkeyWindow.widthRatio * 100).rounded())
     let height = Int((store.hotkeyWindow.heightRatio * 100).rounded())
-    return "On show, Prowl will resize to \(width)% width and \(height)% height of the active display."
+    let minimumWidth = Int(store.hotkeyWindow.minimumWidth.rounded())
+    let minimumHeight = Int(store.hotkeyWindow.minimumHeight.rounded())
+    return
+      "On show, Prowl will resize to \(width)% width and \(height)% height of the active display, "
+      + "with a fallback minimum size of \(minimumWidth) × \(minimumHeight)."
   }
 
   private var visibilitySummary: String {
@@ -173,6 +191,26 @@ struct HotkeyWindowSettingsView: View {
           .font(.body.monospaced())
           .foregroundStyle(.secondary)
           .frame(width: 48, alignment: .trailing)
+      }
+    }
+  }
+
+  private func minimumSizeRow(
+    title: String,
+    value: Binding<Double>,
+    range: ClosedRange<Double>
+  ) -> some View {
+    LabeledContent(title) {
+      HStack(spacing: 12) {
+        Stepper(
+          value: value,
+          in: range,
+          step: 20
+        ) {
+          Text("\(Int(value.wrappedValue.rounded())) pt")
+            .font(.body.monospaced())
+            .frame(minWidth: 88, alignment: .trailing)
+        }
       }
     }
   }

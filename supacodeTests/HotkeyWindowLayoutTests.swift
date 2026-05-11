@@ -11,6 +11,8 @@ struct HotkeyWindowLayoutTests {
       hotkey: nil,
       widthRatio: 1,
       heightRatio: 2.0 / 3.0,
+      minimumWidth: HotkeyWindowSettings.defaultMinimumWidth,
+      minimumHeight: HotkeyWindowSettings.defaultMinimumHeight,
       hideOnApplicationDeactivate: true
     )
 
@@ -23,6 +25,48 @@ struct HotkeyWindowLayoutTests {
     #expect(frame.origin.y == 40)
     #expect(frame.width == 1440)
     #expect(frame.height == 600)
+  }
+
+  @Test func frameUsesConfiguredMinimumSizeWhenVisibleFrameIsAbnormal() {
+    let settings = HotkeyWindowSettings(
+      isEnabled: true,
+      hotkey: nil,
+      widthRatio: 0.3,
+      heightRatio: 0.25,
+      minimumWidth: 756,
+      minimumHeight: 471
+    )
+
+    let frame = HotkeyWindowFrameCalculator.frame(
+      in: CGRect(x: 0, y: 0, width: 0, height: 0),
+      retryingWith: CGRect(x: 0, y: 0, width: 1512, height: 942),
+      settings: settings
+    )
+
+    #expect(frame.origin.x == 378)
+    #expect(frame.origin.y == 0)
+    #expect(frame.width == 756)
+    #expect(frame.height == 471)
+  }
+
+  @Test func frameFallsBackToFourteenInchHalfScreenWhenAllDisplayMetricsAreInvalid() {
+    let settings = HotkeyWindowSettings(
+      isEnabled: true,
+      hotkey: nil,
+      widthRatio: 0.3,
+      heightRatio: 0.25
+    )
+
+    let frame = HotkeyWindowFrameCalculator.frame(
+      in: CGRect(x: 0, y: 0, width: 0, height: 0),
+      retryingWith: CGRect(x: 0, y: 0, width: 0, height: 0),
+      settings: settings
+    )
+
+    #expect(frame.origin.x == 0)
+    #expect(frame.origin.y == 0)
+    #expect(frame.width == 756)
+    #expect(frame.height == 471)
   }
 
   @Test func selectorPrefersScreenContainingMouse() {
@@ -95,28 +139,9 @@ struct HotkeyWindowLayoutTests {
     #expect(restoreOrder == .restoreThenHide)
   }
 
-  @Test func dismissalPlannerKeepsHotkeyWindowVisibleWhileSheetIsAttached() {
-    #expect(
-      HotkeyWindowDismissalPlanner.shouldDismissWhenWindowResigns(
-        hasAttachedSheet: true,
-        hideOnApplicationDeactivate: true
-      ) == false
-    )
-  }
-
-  @Test func dismissalPlannerRespectsHideOnApplicationDeactivateSetting() {
-    #expect(
-      HotkeyWindowDismissalPlanner.shouldDismissWhenWindowResigns(
-        hasAttachedSheet: false,
-        hideOnApplicationDeactivate: true
-      )
-    )
-    #expect(
-      HotkeyWindowDismissalPlanner.shouldDismissWhenWindowResigns(
-        hasAttachedSheet: false,
-        hideOnApplicationDeactivate: false
-      ) == false
-    )
+  @Test func dismissalPlannerDismissesOnSpaceChangeButNotWindowResign() {
+    #expect(HotkeyWindowDismissalPlanner.shouldDismissWhenActiveSpaceChanges())
+    #expect(HotkeyWindowDismissalPlanner.shouldDismissWhenWindowResigns() == false)
   }
 
   @Test func dismissalPlannerAlwaysDismissesWhenActiveSpaceChanges() {

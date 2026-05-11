@@ -673,9 +673,9 @@ struct RepositoriesFeatureTests {
 
     let expectedSavedEntries = [
       [
-        PersistedRepositoryEntry(path: repoRoot, kind: .git),
-        PersistedRepositoryEntry(path: plainRoot, kind: .plain),
-      ]
+        PersistedRepositoryEntry(path: repoRoot, kind: .git, bookmarkData: repoBookmark),
+        PersistedRepositoryEntry(path: plainRoot, kind: .plain, bookmarkData: plainBookmark),
+      ],
     ]
     #expect(savedEntries.value == expectedSavedEntries)
   }
@@ -3325,6 +3325,7 @@ struct RepositoriesFeatureTests {
   }
 
   @Test func pullRequestActionMergeRefreshesImmediatelyWithoutSyntheticMergedState() async {
+    let clock = TestClock()
     let repoRoot = "/tmp/repo"
     let mainWorktree = makeWorktree(id: repoRoot, name: "main", repoRoot: repoRoot)
     let featureWorktree = makeWorktree(
@@ -3347,6 +3348,7 @@ struct RepositoriesFeatureTests {
     let store = TestStore(initialState: state) {
       RepositoriesFeature()
     } withDependencies: {
+      $0.continuousClock = clock
       $0.githubIntegration.isAvailable = { true }
       $0.githubCLI.resolveRemoteInfo = { _ in upstreamRemoteInfo }
       $0.githubCLI.mergePullRequest = { _, _, number, _ in
@@ -3370,6 +3372,7 @@ struct RepositoriesFeatureTests {
   }
 
   @Test func pullRequestActionMergeUsesGlobalStrategyWhenRepositoryOverrideMissing() async {
+    let clock = TestClock()
     let repoRoot = "/tmp/repo"
     let mainWorktree = makeWorktree(id: repoRoot, name: "main", repoRoot: repoRoot)
     let featureWorktree = makeWorktree(
@@ -3399,6 +3402,7 @@ struct RepositoriesFeatureTests {
     let store = TestStore(initialState: state) {
       RepositoriesFeature()
     } withDependencies: {
+      $0.continuousClock = clock
       $0.githubIntegration.isAvailable = { true }
       $0.githubCLI.resolveRemoteInfo = { _ in upstreamRemoteInfo }
       $0.githubCLI.mergePullRequest = { _, _, _, strategy in
@@ -3526,6 +3530,7 @@ struct RepositoriesFeatureTests {
   }
 
   @Test func pullRequestActionCloseRefreshesImmediately() async {
+    let clock = TestClock()
     let repoRoot = "/tmp/repo"
     let mainWorktree = makeWorktree(id: repoRoot, name: "main", repoRoot: repoRoot)
     let featureWorktree = makeWorktree(
@@ -3547,6 +3552,7 @@ struct RepositoriesFeatureTests {
     let store = TestStore(initialState: state) {
       RepositoriesFeature()
     } withDependencies: {
+      $0.continuousClock = clock
       $0.githubIntegration.isAvailable = { true }
       $0.githubCLI.resolveRemoteInfo = { _ in upstreamRemoteInfo }
       $0.githubCLI.closePullRequest = { _, _, number in
@@ -3795,6 +3801,7 @@ struct RepositoriesFeatureTests {
   }
 
   @Test func worktreeInfoEventRepositoryPullRequestRefreshQueuesWhileAvailabilityUnknown() async {
+    let clock = TestClock()
     let repoRoot = "/tmp/repo"
     let mainWorktree = makeWorktree(id: repoRoot, name: "main", repoRoot: repoRoot)
     let featureWorktree = makeWorktree(
@@ -3806,6 +3813,7 @@ struct RepositoriesFeatureTests {
     let store = TestStore(initialState: makeState(repositories: [repository])) {
       RepositoriesFeature()
     } withDependencies: {
+      $0.continuousClock = clock
       $0.githubIntegration.isAvailable = { false }
       $0.gitClient.remoteInfo = { _ in
         Issue.record("remoteInfo should not be requested when GitHub integration is unavailable")
@@ -3920,6 +3928,7 @@ struct RepositoriesFeatureTests {
   }
 
   @Test func githubIntegrationAvailabilityUnavailablePromotesQueuedRefreshesToPending() async {
+    let clock = TestClock()
     let repoRoot = "/tmp/repo"
     let mainWorktree = makeWorktree(id: repoRoot, name: "main", repoRoot: repoRoot)
     let featureWorktree = makeWorktree(
@@ -3937,6 +3946,8 @@ struct RepositoriesFeatureTests {
     )
     let store = TestStore(initialState: initialState) {
       RepositoriesFeature()
+    } withDependencies: {
+      $0.continuousClock = clock
     }
 
     await store.send(.githubIntegration(.githubIntegrationAvailabilityUpdated(false))) {

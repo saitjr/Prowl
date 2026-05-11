@@ -112,6 +112,22 @@ struct RepositoryPersistenceClientTests {
     )
   }
 
+  @Test func repositoryEntryNormalizerPreservesBookmarkDataAcrossDuplicates() {
+    let bookmark = Data("repo".utf8)
+
+    let result = RepositoryEntryNormalizer.normalize([
+      PersistedRepositoryEntry(path: "/tmp/repo", kind: .plain),
+      PersistedRepositoryEntry(path: "/tmp/repo/../repo", kind: .git, bookmarkData: bookmark),
+      PersistedRepositoryEntry(path: "/tmp/plain", kind: .plain),
+    ])
+
+    #expect(
+      result == [
+        PersistedRepositoryEntry(path: "/tmp/repo", kind: .git, bookmarkData: bookmark),
+        PersistedRepositoryEntry(path: "/tmp/plain", kind: .plain),
+      ]
+    )
+  }
   @Test(.dependencies) func legacyArchivedWorktreeIDsMigratedAndCleared() async {
     let client = RepositoryPersistenceClient.liveValue
 
