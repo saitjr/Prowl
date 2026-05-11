@@ -79,6 +79,15 @@ struct AppFeatureCommandPaletteTests {
     await store.receive(\.updates.checkForUpdates)
   }
 
+  @Test(.dependencies) func jumpToLatestUnreadDispatchesAppAction() async {
+    let store = TestStore(initialState: AppFeature.State()) {
+      AppFeature()
+    }
+
+    await store.send(.commandPalette(.delegate(.jumpToLatestUnread)))
+    await store.receive(\.jumpToLatestUnread)
+  }
+
   @Test(.dependencies) func ghosttyCommandDispatchesBindingActionToTerminalClient() async {
     let worktree = makeWorktree(
       id: "/tmp/repo-ghostty/wt-1",
@@ -178,6 +187,7 @@ struct AppFeatureCommandPaletteTests {
       AppFeature()
     }
 
+    let archivedDisplay = AppShortcuts.archivedWorktrees.display
     let expectedAlert = AlertState<RepositoriesFeature.Alert> {
       TextState("Archive worktree?")
     } actions: {
@@ -188,7 +198,7 @@ struct AppFeatureCommandPaletteTests {
         TextState("Cancel")
       }
     } message: {
-      TextState("Archive \(worktree.name)?")
+      TextState("Find \(worktree.name) later in Menu Bar > Worktrees > Archived Worktrees (\(archivedDisplay)).")
     }
 
     await store.send(.commandPalette(.delegate(.archiveWorktree(worktree.id, repository.id))))

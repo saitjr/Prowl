@@ -56,6 +56,19 @@ Or use the `/sync-upstream` command which automates these steps.
 
 If conflicts happen, resolve once, commit, and `rerere` will likely auto-apply next time.
 
+## Ghostty Submodule Sync
+
+Prowl carries a small Ghostty fork patch for embedded APIs. Before changing or upgrading `ThirdParty/ghostty`, read
+`doc-onevcat/fork-sync-ghostty.md`.
+
+The submodule should point at `onevcat/ghostty` patched branches named `release/v<UPSTREAM_TAG>-patched`. After moving
+the submodule pointer, run:
+
+```bash
+make sync-ghostty
+make build-app
+```
+
 ## Release Workflow
 
 ### Full Public Release
@@ -95,6 +108,7 @@ Builds a Release archive, signs it locally, and installs to `/Applications`.
 | `APPLE_TEAM_ID` | from identity | Apple Team ID |
 | `APPLE_NOTARY_KEYCHAIN_PROFILE` | `supacode-notary` | Keychain profile for notarytool |
 | `SPARKLE_PRIVATE_KEY_FILE` | `~/.prowl-sparkle-private-key` | EdDSA private key for appcast |
+| `SKIP_SENTRY` | unset | Set to `1` to skip dSYM upload and Sentry release tracking |
 
 ## Notarization Credentials
 
@@ -105,6 +119,57 @@ xcrun notarytool store-credentials supacode-notary \
   --apple-id <email> \
   --password <app-specific-password> \
   --team-id <team-id>
+```
+
+## Sentry Integration
+
+The release script uploads dSYMs and registers each version as a Sentry release so crash reports get symbolicated stack traces and dashboards can associate issues with specific versions.
+
+### One-time setup
+
+Install `sentry-cli` (separate from the newer `sentry` CLI used for issue inspection):
+
+```bash
+brew install getsentry/tools/sentry-cli
+```
+
+Configure auth + defaults in `~/.sentryclirc`:
+
+```ini
+[auth]
+token=sntryu_xxxxxxxx
+
+[defaults]
+url=https://sentry.io/
+org=onevs-den
+project=prowl-macos
+```
+
+Token scopes required: `event:read`, `project:read`, `project:releases`. Generate at <https://sentry.io/settings/account/api/auth-tokens/>.
+
+### What the release script does
+
+After `make archive` produces `build/supacode.xcarchive/dSYMs/`:
+
+1. `sentry-cli releases new prowl@<VERSION>` — registers the release
+2. `sentry-cli debug-files upload --include-sources --wait <dSYM>` — uploads symbols + source context
+3. `sentry-cli releases set-commits --auto` — associates commits for "first seen in" tracking
+4. After GitHub Release is published: `sentry-cli releases finalize prowl@<VERSION>`
+
+The release name `prowl@<VERSION>` matches `options.releaseName` set in `supacode/App/supacodeApp.swift`, so dSYMs and issues align automatically.
+
+### Failure handling
+
+Any Sentry step that fails only prints a warning — the release continues. dSYMs can be re-uploaded later with:
+
+```bash
+sentry-cli debug-files upload --include-sources <path-to-dSYM>
+```
+
+To skip the entire Sentry block (e.g. emergency release, sentry-cli not installed):
+
+```bash
+SKIP_SENTRY=1 ./doc-onevcat/scripts/release.sh
 ```
 
 ## Helper Scripts

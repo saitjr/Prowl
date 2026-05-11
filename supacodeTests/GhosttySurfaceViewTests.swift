@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import GhosttyKit
 import Testing
@@ -6,6 +7,96 @@ import Testing
 
 @MainActor
 struct GhosttySurfaceViewTests {
+  @Test func mainMenuExactMatchRejectsShiftVariantOfCommandComma() throws {
+    let menu = NSMenu()
+    let item = NSMenuItem(title: "Settings", action: nil, keyEquivalent: ",")
+    item.keyEquivalentModifierMask = [.command]
+    menu.addItem(item)
+
+    let event = try makeKeyEvent(
+      characters: "<",
+      charactersIgnoringModifiers: ",",
+      modifiers: [.command, .shift],
+      keyCode: 43
+    )
+
+    #expect(!GhosttySurfaceView.mainMenuHasMatchingItem(for: event, in: menu))
+  }
+
+  @Test func mainMenuExactMatchAcceptsExactCommandComma() throws {
+    let menu = NSMenu()
+    let item = NSMenuItem(title: "Settings", action: nil, keyEquivalent: ",")
+    item.keyEquivalentModifierMask = [.command]
+    menu.addItem(item)
+
+    let event = try makeKeyEvent(
+      characters: ",",
+      charactersIgnoringModifiers: ",",
+      modifiers: [.command],
+      keyCode: 43
+    )
+
+    #expect(GhosttySurfaceView.mainMenuHasMatchingItem(for: event, in: menu))
+  }
+
+  @Test func mainMenuExactMatchAcceptsShiftedSymbolKeyEquivalent() throws {
+    let menu = NSMenu()
+    let item = NSMenuItem(title: "Help", action: nil, keyEquivalent: "?")
+    item.keyEquivalentModifierMask = [.command]
+    menu.addItem(item)
+
+    let event = try makeKeyEvent(
+      characters: "?",
+      charactersIgnoringModifiers: "/",
+      modifiers: [.command, .shift],
+      keyCode: 44
+    )
+
+    #expect(GhosttySurfaceView.mainMenuHasMatchingItem(for: event, in: menu))
+  }
+
+  @Test func mainMenuExactMatchRejectsUnshiftedVariantOfShiftedSymbolKeyEquivalent() throws {
+    let menu = NSMenu()
+    let item = NSMenuItem(title: "Help", action: nil, keyEquivalent: "?")
+    item.keyEquivalentModifierMask = [.command]
+    menu.addItem(item)
+
+    let event = try makeKeyEvent(
+      characters: "/",
+      charactersIgnoringModifiers: "/",
+      modifiers: [.command],
+      keyCode: 44
+    )
+
+    #expect(!GhosttySurfaceView.mainMenuHasMatchingItem(for: event, in: menu))
+  }
+
+  @Test func mainMenuExactMatchFindsSubmenuItems() throws {
+    let menu = NSMenu()
+    let parent = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
+    let submenu = NSMenu()
+    let item = NSMenuItem(title: "Show Diff", action: nil, keyEquivalent: "y")
+    item.keyEquivalentModifierMask = [.command, .shift]
+    submenu.addItem(item)
+    parent.submenu = submenu
+    menu.addItem(parent)
+
+    let event = try makeKeyEvent(
+      characters: "Y",
+      charactersIgnoringModifiers: "y",
+      modifiers: [.command, .shift],
+      keyCode: 16
+    )
+
+    #expect(GhosttySurfaceView.mainMenuHasMatchingItem(for: event, in: menu))
+  }
+
+  @Test func keyEquivalentFocusOwnershipRequiresActualFirstResponder() {
+    #expect(GhosttySurfaceView.hasKeyEquivalentFocusOwnership(cachedFocused: true, isActualFirstResponder: true))
+    #expect(!GhosttySurfaceView.hasKeyEquivalentFocusOwnership(cachedFocused: true, isActualFirstResponder: false))
+    #expect(!GhosttySurfaceView.hasKeyEquivalentFocusOwnership(cachedFocused: false, isActualFirstResponder: true))
+  }
+
   @Test func occlusionStateResendsDesiredValueAfterAttachmentChange() {
     var state = GhosttySurfaceView.OcclusionState()
 
@@ -142,16 +233,153 @@ struct GhosttySurfaceViewTests {
     surfaceView.handleAttachmentChangeForTesting()
     await drainMainQueue()
 
+    // Occluding (false) applies immediately even while detached to stop
+    // the render loop.  Un-occluding (true) is deferred until reattached.
     surfaceView.setOcclusion(false)
     surfaceView.setOcclusion(true)
     surfaceView.setOcclusion(false)
     await drainMainQueue()
-    #expect(appliedValues == [true])
+    #expect(appliedValues == [true, false])
 
     attachmentState = (hasSuperview: true, hasWindow: true)
     surfaceView.handleAttachmentChangeForTesting()
     await drainMainQueue()
-    #expect(appliedValues == [true, false])
+    // Reattachment re-applies the desired value (false) even though it
+    // was already applied, because invalidateForAttachmentChange clears
+    // the applied cache.
+    #expect(appliedValues == [true, false, false])
+  }
+
+  @Test func occlusionFalseAppliesImmediatelyWithoutViewAttachment() async {
+    let runtime = GhosttyRuntime()
+    let surfaceView = GhosttySurfaceView(
+      runtime: runtime,
+      workingDirectory: nil,
+      context: GHOSTTY_SURFACE_CONTEXT_TAB,
+      skipsSurfaceCreationForTesting: true
+    )
+    var appliedValues: [Bool] = []
+    surfaceView.onOcclusionAppliedForTesting = { appliedValues.append($0) }
+    var attachmentState = (hasSuperview: false, hasWindow: false)
+    surfaceView.attachmentStateForTesting = { attachmentState }
+
+    // Occluding without a view hierarchy applies immediately (stops the
+    // Metal render loop for restored surfaces that are never displayed).
+    surfaceView.setOcclusion(false)
+    await drainMainQueue()
+    #expect(appliedValues == [false])
+
+    // Un-occluding without a view hierarchy is deferred.
+    surfaceView.setOcclusion(true)
+    await drainMainQueue()
+    #expect(appliedValues == [false])
+
+    // Once attached, the deferred un-occlude is applied.
+    attachmentState = (hasSuperview: true, hasWindow: true)
+    surfaceView.handleAttachmentChangeForTesting()
+    await drainMainQueue()
+    #expect(appliedValues == [false, true])
+  }
+
+  @Test func occlusionCanRecoverWhenAttachmentCallbackIsMissedAfterReattachment() async {
+    let runtime = GhosttyRuntime()
+    let surfaceView = GhosttySurfaceView(
+      runtime: runtime,
+      workingDirectory: nil,
+      context: GHOSTTY_SURFACE_CONTEXT_TAB,
+      skipsSurfaceCreationForTesting: true
+    )
+    var appliedValues: [Bool] = []
+    surfaceView.onOcclusionAppliedForTesting = { appliedValues.append($0) }
+    var attachmentState = (hasSuperview: true, hasWindow: true)
+    surfaceView.attachmentStateForTesting = { attachmentState }
+
+    surfaceView.setOcclusion(true)
+    await drainMainQueue()
+    #expect(appliedValues == [true])
+
+    attachmentState = (hasSuperview: false, hasWindow: false)
+    surfaceView.handleAttachmentChangeForTesting()
+    await drainMainQueue()
+
+    attachmentState = (hasSuperview: true, hasWindow: true)
+    surfaceView.resumeDeferredOcclusionIfNeededForTesting()
+    await drainMainQueue()
+    #expect(appliedValues == [true, true])
+  }
+
+  @Test func terminalHostReattachesSurfaceOnlyAfterItLeavesTheViewTree() {
+    let runtime = GhosttyRuntime()
+    let surfaceView = GhosttySurfaceView(
+      runtime: runtime,
+      workingDirectory: nil,
+      context: GHOSTTY_SURFACE_CONTEXT_TAB,
+      skipsSurfaceCreationForTesting: true
+    )
+    let terminalHost = GhosttySurfaceScrollView(surfaceView: surfaceView, hostKind: .terminal)
+    let foreignHost = NSView()
+
+    #expect(terminalHost.isSurfaceAttachedToDocumentView)
+
+    foreignHost.addSubview(surfaceView)
+    #expect(!terminalHost.isSurfaceAttachedToDocumentView)
+
+    terminalHost.ensureSurfaceAttached(requiresLiveHost: false)
+
+    #expect(!terminalHost.isSurfaceAttachedToDocumentView)
+    #expect(surfaceView.superview === foreignHost)
+
+    surfaceView.removeFromSuperview()
+    #expect(surfaceView.superview == nil)
+
+    terminalHost.ensureSurfaceAttached(requiresLiveHost: false)
+
+    #expect(terminalHost.isSurfaceAttachedToDocumentView)
+    #expect(surfaceView.scrollWrapper === terminalHost)
+  }
+
+  @Test func terminalHostDoesNotStealSurfaceFromCanvasHost() {
+    let runtime = GhosttyRuntime()
+    let surfaceView = GhosttySurfaceView(
+      runtime: runtime,
+      workingDirectory: nil,
+      context: GHOSTTY_SURFACE_CONTEXT_TAB,
+      skipsSurfaceCreationForTesting: true
+    )
+    let terminalHost = GhosttySurfaceScrollView(surfaceView: surfaceView, hostKind: .terminal)
+    let canvasHost = GhosttySurfaceScrollView(surfaceView: surfaceView, hostKind: .canvas)
+
+    #expect(!terminalHost.isSurfaceAttachedToDocumentView)
+    #expect(canvasHost.isSurfaceAttachedToDocumentView)
+    #expect(surfaceView.scrollWrapper === canvasHost)
+
+    terminalHost.ensureSurfaceAttached(requiresLiveHost: false)
+
+    #expect(!terminalHost.isSurfaceAttachedToDocumentView)
+    #expect(canvasHost.isSurfaceAttachedToDocumentView)
+    #expect(surfaceView.scrollWrapper === canvasHost)
+  }
+
+  @Test func canvasHostDoesNotStealDetachedSurfaceBack() {
+    let runtime = GhosttyRuntime()
+    let surfaceView = GhosttySurfaceView(
+      runtime: runtime,
+      workingDirectory: nil,
+      context: GHOSTTY_SURFACE_CONTEXT_TAB,
+      skipsSurfaceCreationForTesting: true
+    )
+    let canvasHost = GhosttySurfaceScrollView(surfaceView: surfaceView, hostKind: .canvas)
+    let foreignHost = NSView()
+
+    #expect(canvasHost.isSurfaceAttachedToDocumentView)
+
+    foreignHost.addSubview(surfaceView)
+    #expect(!canvasHost.isSurfaceAttachedToDocumentView)
+
+    canvasHost.ensureSurfaceAttached(requiresLiveHost: false)
+
+    #expect(!canvasHost.isSurfaceAttachedToDocumentView)
+    #expect(surfaceView.superview === foreignHost)
   }
 
   private func drainMainQueue() async {
@@ -257,5 +485,27 @@ struct GhosttySurfaceViewTests {
     let scrollView = GhosttySurfaceScrollView(surfaceView: surfaceView)
 
     #expect(scrollView.mouseDownCanMoveWindow == false)
+  }
+
+  private func makeKeyEvent(
+    characters: String,
+    charactersIgnoringModifiers: String,
+    modifiers: NSEvent.ModifierFlags,
+    keyCode: UInt16
+  ) throws -> NSEvent {
+    try #require(
+      NSEvent.keyEvent(
+        with: .keyDown,
+        location: .zero,
+        modifierFlags: modifiers,
+        timestamp: 1,
+        windowNumber: 0,
+        context: nil,
+        characters: characters,
+        charactersIgnoringModifiers: charactersIgnoringModifiers,
+        isARepeat: false,
+        keyCode: keyCode
+      )
+    )
   }
 }

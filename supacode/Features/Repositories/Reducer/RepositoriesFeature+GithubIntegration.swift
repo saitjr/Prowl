@@ -2,6 +2,22 @@ import AppKit
 import ComposableArchitecture
 import Foundation
 
+private let unresolvedGithubRepositoryMessage =
+  "Prowl could not determine which GitHub repository owns this pull request. Check the repository remote and try again."
+
+extension RepositoriesFeature {
+  static func resolveGithubRemoteInfo(
+    repositoryRootURL: URL,
+    githubCLI: GithubCLIClient,
+    gitClient: GitClientDependency
+  ) async -> GithubRemoteInfo? {
+    if let remoteInfo = await githubCLI.resolveRemoteInfo(repositoryRootURL) {
+      return remoteInfo
+    }
+    return await gitClient.remoteInfo(repositoryRootURL)
+  }
+}
+
 extension RepositoriesFeature {
   // swiftlint:disable:next cyclomatic_complexity function_body_length
   func reduceGithubIntegration(
@@ -176,7 +192,7 @@ extension RepositoriesFeature {
       guard let repository = state.repositories[id: repositoryID] else {
         return .none
       }
-      var archiveWorktreeIDs: [Worktree.ID] = []
+      var mergedWorktreeIDs: [Worktree.ID] = []
       for worktreeID in pullRequestsByWorktreeID.keys.sorted() {
         guard let worktree = repository.worktrees[id: worktreeID] else {
           continue
@@ -193,31 +209,73 @@ extension RepositoriesFeature {
           pullRequest: pullRequest,
           state: &state
         )
-        if state.automaticallyArchiveMergedWorktrees,
+        if state.mergedWorktreeAction != nil,
           !previousMerged,
           nextMerged,
           !state.isMainWorktree(worktree),
           !state.isWorktreeArchived(worktreeID),
           !state.deletingWorktreeIDs.contains(worktreeID)
         {
-          archiveWorktreeIDs.append(worktreeID)
+          mergedWorktreeIDs.append(worktreeID)
         }
       }
-      guard !archiveWorktreeIDs.isEmpty else {
+      guard !mergedWorktreeIDs.isEmpty else {
         return .none
       }
-      return .merge(
-        archiveWorktreeIDs.map { worktreeID in
-          .send(.worktreeLifecycle(.archiveWorktreeConfirmed(worktreeID, repositoryID)))
-        }
-      )
+      switch state.mergedWorktreeAction {
+      case .archive:
+        return .merge(
+          mergedWorktreeIDs.map { worktreeID in
+            .send(.worktreeLifecycle(.archiveWorktreeConfirmed(worktreeID, repositoryID)))
+          }
+        )
+      case .delete:
+        return .merge(
+          mergedWorktreeIDs.map { worktreeID in
+            .send(.worktreeLifecycle(.deleteWorktreeConfirmed(worktreeID, repositoryID)))
+          }
+        )
+      case nil:
+        return .none
+      }
 
     case .pullRequestAction(let worktreeID, let action):
       guard let worktree = state.worktree(for: worktreeID),
         let repositoryID = state.repositoryID(containing: worktreeID),
-        let repository = state.repositories[id: repositoryID],
-        let pullRequest = state.worktreeInfo(for: worktreeID)?.pullRequest
+        let repository = state.repositories[id: repositoryID]
       else {
+        return .send(
+          .presentAlert(
+            title: "Repository not available",
+            message: "Prowl could not find the selected repository."
+          )
+        )
+      }
+      let repoRoot = worktree.repositoryRootURL
+      let worktreeRoot = worktree.workingDirectory
+      let optionalPullRequest = state.worktreeInfo(for: worktreeID)?.pullRequest
+      if case .openOnCodeHost = action {
+        let gitClient = gitClient
+        let openURLClient = openURLClient
+        let pullRequestURL = optionalPullRequest.flatMap { Self.validWebURL($0.url) }
+        return .run { send in
+          if let pullRequestURL {
+            await openURLClient.open(pullRequestURL)
+            return
+          }
+          guard let repositoryURL = await gitClient.repositoryWebURL(repoRoot) else {
+            await send(
+              .presentAlert(
+                title: "Repository URL not available",
+                message: "Prowl could not determine a code host URL for this repository."
+              )
+            )
+            return
+          }
+          await openURLClient.open(repositoryURL)
+        }
+      }
+      guard let pullRequest = optionalPullRequest else {
         return .send(
           .presentAlert(
             title: "Pull request not available",
@@ -225,8 +283,6 @@ extension RepositoriesFeature {
           )
         )
       }
-      let repoRoot = worktree.repositoryRootURL
-      let worktreeRoot = worktree.workingDirectory
       let pullRequestRefresh = WorktreeInfoWatcherClient.Event.repositoryPullRequestRefresh(
         repositoryRootURL: repoRoot,
         worktreeIDs: repository.worktrees.map(\.id)
@@ -236,18 +292,8 @@ extension RepositoriesFeature {
         $0.checkState == .failure && $0.detailsUrl != nil
       }?.detailsUrl
       switch action {
-      case .openOnGithub:
-        guard let url = URL(string: pullRequest.url) else {
-          return .send(
-            .presentAlert(
-              title: "Invalid pull request URL",
-              message: "Prowl could not open the pull request URL."
-            )
-          )
-        }
-        return .run { @MainActor _ in
-          NSWorkspace.shared.open(url)
-        }
+      case .openOnCodeHost:
+        return .none
 
       case .copyFailingJobURL:
         guard let failingCheckDetailsURL, !failingCheckDetailsURL.isEmpty else {
@@ -282,6 +328,7 @@ extension RepositoriesFeature {
       case .markReadyForReview:
         let githubCLI = githubCLI
         let githubIntegration = githubIntegration
+        let gitClient = gitClient
         return .run { send in
           guard await githubIntegration.isAvailable() else {
             await send(
@@ -294,7 +341,19 @@ extension RepositoriesFeature {
           }
           await send(.showToast(.inProgress("Marking PR ready…")))
           do {
-            try await githubCLI.markPullRequestReady(worktreeRoot, pullRequest.number)
+            guard
+              let remoteInfo = await Self.resolveGithubRemoteInfo(
+                repositoryRootURL: repoRoot,
+                githubCLI: githubCLI,
+                gitClient: gitClient
+              )
+            else {
+              await send(.dismissToast)
+              await send(
+                .presentAlert(title: "GitHub repository not resolved", message: unresolvedGithubRepositoryMessage))
+              return
+            }
+            try await githubCLI.markPullRequestReady(worktreeRoot, remoteInfo, pullRequest.number)
             await send(.showToast(.success("Pull request marked ready")))
             await send(.githubIntegration(.delayedPullRequestRefresh(worktreeID)))
           } catch {
@@ -311,6 +370,7 @@ extension RepositoriesFeature {
       case .merge:
         let githubCLI = githubCLI
         let githubIntegration = githubIntegration
+        let gitClient = gitClient
         return .run { send in
           guard await githubIntegration.isAvailable() else {
             await send(
@@ -322,10 +382,23 @@ extension RepositoriesFeature {
             return
           }
           @Shared(.repositorySettings(repoRoot)) var repositorySettings
-          let strategy = repositorySettings.pullRequestMergeStrategy
+          @Shared(.settingsFile) var settingsFile
+          let strategy = repositorySettings.pullRequestMergeStrategy ?? settingsFile.global.pullRequestMergeStrategy
           await send(.showToast(.inProgress("Merging pull request…")))
           do {
-            try await githubCLI.mergePullRequest(worktreeRoot, pullRequest.number, strategy)
+            guard
+              let remoteInfo = await Self.resolveGithubRemoteInfo(
+                repositoryRootURL: repoRoot,
+                githubCLI: githubCLI,
+                gitClient: gitClient
+              )
+            else {
+              await send(.dismissToast)
+              await send(
+                .presentAlert(title: "GitHub repository not resolved", message: unresolvedGithubRepositoryMessage))
+              return
+            }
+            try await githubCLI.mergePullRequest(worktreeRoot, remoteInfo, pullRequest.number, strategy)
             await send(.showToast(.success("Pull request merged")))
             await send(.worktreeInfoEvent(pullRequestRefresh))
             await send(.githubIntegration(.delayedPullRequestRefresh(worktreeID)))
@@ -343,6 +416,7 @@ extension RepositoriesFeature {
       case .close:
         let githubCLI = githubCLI
         let githubIntegration = githubIntegration
+        let gitClient = gitClient
         return .run { send in
           guard await githubIntegration.isAvailable() else {
             await send(
@@ -355,7 +429,19 @@ extension RepositoriesFeature {
           }
           await send(.showToast(.inProgress("Closing pull request…")))
           do {
-            try await githubCLI.closePullRequest(worktreeRoot, pullRequest.number)
+            guard
+              let remoteInfo = await Self.resolveGithubRemoteInfo(
+                repositoryRootURL: repoRoot,
+                githubCLI: githubCLI,
+                gitClient: gitClient
+              )
+            else {
+              await send(.dismissToast)
+              await send(
+                .presentAlert(title: "GitHub repository not resolved", message: unresolvedGithubRepositoryMessage))
+              return
+            }
+            try await githubCLI.closePullRequest(worktreeRoot, remoteInfo, pullRequest.number)
             await send(.showToast(.success("Pull request closed")))
             await send(.worktreeInfoEvent(pullRequestRefresh))
             await send(.githubIntegration(.delayedPullRequestRefresh(worktreeID)))
@@ -534,10 +620,21 @@ extension RepositoriesFeature {
         .cancel(id: CancelID.githubIntegrationRecovery)
       )
 
-    case .setAutomaticallyArchiveMergedWorktrees(let isEnabled):
-      state.automaticallyArchiveMergedWorktrees = isEnabled
+    case .setMergedWorktreeAction(let action):
+      state.mergedWorktreeAction = action
       return .none
     }
+  }
+
+  nonisolated private static func validWebURL(_ raw: String) -> URL? {
+    guard let url = URL(string: raw),
+      let scheme = url.scheme?.lowercased(),
+      ["http", "https"].contains(scheme),
+      url.host != nil
+    else {
+      return nil
+    }
+    return url
   }
 
   var githubIntegrationReducer: some ReducerOf<Self> {

@@ -8,6 +8,9 @@ struct TerminalTabsRowView: View {
   @Binding var draggingStartLocation: CGFloat?
   @Binding var closeButtonGestureActive: Bool
   let fixedTabWidth: CGFloat?
+  let hasNotification: (TerminalTabID) -> Bool
+  let renameTab: (TerminalTabID) -> Void
+  let changeIcon: (TerminalTabID) -> Void
   let closeTab: (TerminalTabID) -> Void
   let closeOthers: (TerminalTabID) -> Void
   let closeToRight: (TerminalTabID) -> Void
@@ -28,13 +31,28 @@ struct TerminalTabsRowView: View {
               isDragging: draggingTabId == id,
               tabIndex: index,
               fixedWidth: fixedTabWidth,
+              hasNotification: hasNotification(id),
               onSelect: {
                 manager.selectTab(id)
               },
               onClose: {
                 closeTab(id)
               },
-              closeButtonGestureActive: $closeButtonGestureActive
+              onRename: { newTitle in
+                manager.setCustomTitle(id, title: newTitle)
+              },
+              onChangeIcon: {
+                changeIcon(id)
+              },
+              closeButtonGestureActive: $closeButtonGestureActive,
+              isEditing: manager.editingTabID == id,
+              onBeginRename: {
+                manager.beginTabRename(id)
+              },
+              onEndRename: {
+                guard manager.editingTabID == id else { return }
+                manager.endTabRename()
+              }
             )
             .background(
               TerminalTabMeasurementView(
@@ -49,6 +67,8 @@ struct TerminalTabsRowView: View {
               tabId: id,
               tabs: manager.tabs,
               actions: TerminalTabContextMenuActions(
+                renameTab: renameTab,
+                changeIcon: changeIcon,
                 closeTab: closeTab,
                 closeOthers: closeOthers,
                 closeToRight: closeToRight,

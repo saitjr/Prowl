@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import Sharing
+import SwiftUI
 
 private let terminalLogger = SupaLogger("Terminal")
 private let layoutRestoreFailureMessage = "Saved terminal layout was invalid and has been reset"
@@ -14,6 +15,7 @@ final class WorktreeTerminalManager {
   private var notificationsEnabled = true
   private var commandFinishedNotificationEnabled = true
   private var commandFinishedNotificationThreshold = 10
+  private var agentDetectionEnabled = true
   private var preferredFontSize: Float32?
   private let baselineFontSize: Float32
   private var lastNotificationIndicatorCount: Int?
@@ -52,9 +54,30 @@ final class WorktreeTerminalManager {
     switch command {
     case .createTab(let worktree, let runSetupScriptIfNew):
       Task { createTabAsync(in: worktree, runSetupScriptIfNew: runSetupScriptIfNew) }
-    case .createTabWithInput(let worktree, let input, let runSetupScriptIfNew):
+    case .createTabWithInput(
+      let worktree, let input, let runSetupScriptIfNew, let autoCloseOnSuccess, let customCommandName,
+      let customCommandIcon):
       Task {
-        createTabAsync(in: worktree, runSetupScriptIfNew: runSetupScriptIfNew, initialInput: input)
+        createTabAsync(
+          in: worktree,
+          runSetupScriptIfNew: runSetupScriptIfNew,
+          initialInput: input,
+          autoCloseOnSuccess: autoCloseOnSuccess,
+          customCommandName: customCommandName,
+          customCommandIcon: customCommandIcon
+        )
+      }
+    case .createSplitWithInput(
+      let worktree, let direction, let input, let autoCloseOnSuccess, let customCommandName, let customCommandIcon):
+      Task {
+        createSplitAsync(
+          in: worktree,
+          direction: direction,
+          initialInput: input,
+          autoCloseOnSuccess: autoCloseOnSuccess,
+          customCommandName: customCommandName,
+          customCommandIcon: customCommandIcon
+        )
       }
     case .createTabInDirectory(let worktree, let directory):
       Task {
@@ -71,7 +94,8 @@ final class WorktreeTerminalManager {
           createTabAsync(
             in: worktree,
             runSetupScriptIfNew: false,
-            initialInput: text
+            initialInput: text,
+            autoCloseOnSuccess: false
           )
         }
       }
@@ -123,6 +147,8 @@ final class WorktreeTerminalManager {
       setNotificationsEnabled(enabled)
     case .setCommandFinishedNotification(let enabled, let threshold):
       setCommandFinishedNotification(enabled: enabled, threshold: threshold)
+    case .setAgentDetectionEnabled(let enabled):
+      setAgentDetectionEnabled(enabled)
     case .setCanvasMode(let enabled):
       if enabled {
         terminalLogger.info("[CanvasExit] enteringCanvas previousSelectedWorktree=\(selectedWorktreeID ?? "nil")")
@@ -152,6 +178,8 @@ final class WorktreeTerminalManager {
     case .restoreLayoutSnapshot(let worktrees):
       terminalLogger.info("[LayoutRestore] received restoreLayoutSnapshot command, worktrees=\(worktrees.count)")
       Task { await restoreLayoutSnapshot(from: worktrees) }
+    case .presentTabIconPicker(let worktree):
+      state(for: worktree).presentIconPickerForFocusedTab()
     default:
       return
     }
@@ -199,11 +227,12 @@ final class WorktreeTerminalManager {
       enabled: commandFinishedNotificationEnabled,
       threshold: commandFinishedNotificationThreshold
     )
+    state.setAgentDetectionEnabled(agentDetectionEnabled)
     state.isSelected = { [weak self] in
       self?.selectedWorktreeID == worktree.id
     }
-    state.onNotificationReceived = { [weak self] title, body in
-      self?.emit(.notificationReceived(worktreeID: worktree.id, title: title, body: body))
+    state.onNotificationReceived = { [weak self] surfaceID, title, body in
+      self?.emit(.notificationReceived(worktreeID: worktree.id, surfaceID: surfaceID, title: title, body: body))
     }
     state.onNotificationIndicatorChanged = { [weak self] in
       self?.emitNotificationIndicatorCountIfNeeded()
@@ -211,14 +240,22 @@ final class WorktreeTerminalManager {
     state.onTabCreated = { [weak self] in
       self?.emit(.tabCreated(worktreeID: worktree.id))
     }
-    state.onTabClosed = { [weak self] in
-      self?.emit(.tabClosed(worktreeID: worktree.id))
+    state.onTabClosed = { [weak self, weak state] in
+      guard let self else { return }
+      let remaining = state?.tabManager.tabs.count ?? 0
+      emit(.tabClosed(worktreeID: worktree.id, remainingTabs: remaining))
     }
     state.onFocusChanged = { [weak self] surfaceID in
       self?.emit(.focusChanged(worktreeID: worktree.id, surfaceID: surfaceID))
     }
     state.onTaskStatusChanged = { [weak self] status in
       self?.emit(.taskStatusChanged(worktreeID: worktree.id, status: status))
+    }
+    state.onAgentEntryChanged = { [weak self] entry in
+      self?.emit(.agentEntryChanged(entry))
+    }
+    state.onAgentEntryRemoved = { [weak self] id in
+      self?.emit(.agentEntryRemoved(id))
     }
     state.onRunScriptStatusChanged = { [weak self] isRunning in
       self?.emit(.runScriptStatusChanged(worktreeID: worktree.id, isRunning: isRunning))
@@ -232,6 +269,9 @@ final class WorktreeTerminalManager {
     state.onFontSizeAdjusted = { [weak self] in
       self?.syncPreferredFontSize(from: worktree.id)
     }
+    state.onCustomCommandSucceeded = { [weak self] name, durationMs in
+      self?.emit(.customCommandSucceeded(worktreeID: worktree.id, name: name, durationMs: durationMs))
+    }
     states[worktree.id] = state
     terminalLogger.info("Created terminal state for worktree \(worktree.id)")
     return state
@@ -241,22 +281,66 @@ final class WorktreeTerminalManager {
     in worktree: Worktree,
     runSetupScriptIfNew: Bool,
     initialInput: String? = nil,
-    workingDirectory: URL? = nil
+    workingDirectory: URL? = nil,
+    autoCloseOnSuccess: Bool = false,
+    customCommandName: String? = nil,
+    customCommandIcon: String? = nil
   ) {
     let state = state(for: worktree) { runSetupScriptIfNew }
     let setupScript: String?
-    if state.needsSetupScript() {
+    // Skip setup injection when auto-close is requested so the setup script's
+    // own exit code cannot trigger the close before the user's command runs.
+    if !autoCloseOnSuccess, state.needsSetupScript() {
       @SharedReader(.repositorySettings(worktree.repositoryRootURL))
       var settings = RepositorySettings.default
       setupScript = settings.setupScript
     } else {
       setupScript = nil
     }
-    _ = state.createTab(
+    let tabId = state.createTab(
       setupScript: setupScript,
       initialInput: initialInput,
       workingDirectoryOverride: workingDirectory
     )
+    if let tabId, let surfaceId = state.focusedSurfaceId(in: tabId) {
+      if autoCloseOnSuccess {
+        state.markSurfaceForAutoClose(surfaceId)
+      }
+      if let customCommandName {
+        state.markSurfaceForCustomCommand(surfaceId, name: customCommandName)
+      }
+      if let customCommandIcon {
+        state.applyCustomCommandIcon(customCommandIcon, surfaceId: surfaceId)
+      }
+    }
+  }
+
+  private func createSplitAsync(
+    in worktree: Worktree,
+    direction: UserCustomSplitDirection,
+    initialInput: String,
+    autoCloseOnSuccess: Bool,
+    customCommandName: String? = nil,
+    customCommandIcon: String? = nil
+  ) {
+    let state = state(for: worktree)
+    guard
+      let newSurfaceId = state.createSplitOnFocusedSurface(
+        direction: direction,
+        initialInput: initialInput
+      )
+    else {
+      return
+    }
+    if autoCloseOnSuccess {
+      state.markSurfaceForAutoClose(newSurfaceId)
+    }
+    if let customCommandName {
+      state.markSurfaceForCustomCommand(newSurfaceId, name: customCommandName)
+    }
+    if let customCommandIcon {
+      state.applyCustomCommandIcon(customCommandIcon, surfaceId: newSurfaceId)
+    }
   }
 
   @discardableResult
@@ -356,12 +440,62 @@ final class WorktreeTerminalManager {
     }
   }
 
+  func setAgentDetectionEnabled(_ enabled: Bool) {
+    guard agentDetectionEnabled != enabled else { return }
+    agentDetectionEnabled = enabled
+    for state in states.values {
+      state.setAgentDetectionEnabled(enabled)
+    }
+  }
+
   func hasUnseenNotifications(for worktreeID: Worktree.ID) -> Bool {
     states[worktreeID]?.hasUnseenNotification == true
   }
 
+  func latestUnreadNotificationLocation() -> NotificationLocation? {
+    var bestLocation: NotificationLocation?
+    var bestCreatedAt: Date?
+    for (worktreeID, state) in states {
+      for notification in state.unreadNotifications() {
+        if let bestCreatedAt, bestCreatedAt >= notification.createdAt {
+          break
+        }
+        guard let tabID = state.tabID(containing: notification.surfaceId) else {
+          continue
+        }
+        bestLocation = NotificationLocation(
+          worktreeID: worktreeID,
+          tabID: tabID,
+          surfaceID: notification.surfaceId,
+          notificationID: notification.id
+        )
+        bestCreatedAt = notification.createdAt
+        break
+      }
+    }
+    return bestLocation
+  }
+
+  @discardableResult
+  func focusSurface(worktreeID: Worktree.ID, surfaceID: UUID) -> Bool {
+    states[worktreeID]?.focusSurface(id: surfaceID) == true
+  }
+
+  func markNotificationRead(worktreeID: Worktree.ID, notificationID: UUID) {
+    states[worktreeID]?.markNotificationRead(id: notificationID)
+  }
+
+  func markNotificationsRead(worktreeID: Worktree.ID, surfaceID: UUID) {
+    states[worktreeID]?.markNotificationsRead(forSurfaceID: surfaceID)
+  }
+
   func surfaceBackgroundOpacity() -> Double {
     runtime?.backgroundOpacity() ?? 1.0
+  }
+
+  func unfocusedSplitOverlay() -> (fill: Color?, opacity: Double) {
+    guard let runtime else { return (nil, 0) }
+    return (runtime.unfocusedSplitFill(), runtime.unfocusedSplitOverlayOpacity())
   }
 
   func syncPreferredFontSize(from worktreeID: Worktree.ID) {

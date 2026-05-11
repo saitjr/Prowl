@@ -14,7 +14,7 @@ struct WorktreeSettingsView: View {
     )
     VStack(alignment: .leading) {
       Form {
-        Section("Worktree") {
+        Section("Creation") {
           VStack(alignment: .leading) {
             TextField(
               "Default: current behavior",
@@ -30,6 +30,26 @@ struct WorktreeSettingsView: View {
           .frame(maxWidth: .infinity, alignment: .leading)
           VStack(alignment: .leading) {
             Toggle(
+              "Prompt for branch name during creation",
+              isOn: $store.promptForWorktreeCreation
+            )
+            .help("Ask for branch name and base ref before creating a worktree.")
+            Text("When enabled, you choose the branch name and where it branches from before creating the worktree.")
+              .foregroundStyle(.secondary)
+          }
+          VStack(alignment: .leading) {
+            Toggle(
+              "Fetch remote before creating worktree",
+              isOn: $store.fetchRemoteBeforeWorktreeCreation
+            )
+            .help("Runs git fetch <remote> before creating a worktree.")
+            Text("Keeps remote-tracking base branches current. Fetch failures are logged and creation continues.")
+              .foregroundStyle(.secondary)
+          }
+        }
+        Section("Cleanup") {
+          VStack(alignment: .leading) {
+            Toggle(
               "Also delete local branch when deleting a worktree",
               isOn: $store.deleteBranchOnDeleteWorktree
             )
@@ -40,19 +60,42 @@ struct WorktreeSettingsView: View {
               .foregroundStyle(.red)
           }
           .frame(maxWidth: .infinity, alignment: .leading)
-          Toggle(
-            "Automatically archive merged worktrees",
-            isOn: $store.automaticallyArchiveMergedWorktrees
-          )
-          .help("Archive worktrees automatically when their pull requests are merged.")
+          Picker(selection: $store.mergedWorktreeAction) {
+            Text("Do nothing").tag(MergedWorktreeAction?.none)
+            ForEach(MergedWorktreeAction.allCases) { action in
+              Text(action.title).tag(MergedWorktreeAction?.some(action))
+            }
+          } label: {
+            Text("When a pull request is merged")
+            switch store.mergedWorktreeAction {
+            case .archive:
+              Text("Archives worktrees when their pull requests are merged.")
+            case .delete:
+              Text("Follows the \"Also delete local branch when deleting a worktree\" option above.")
+            case nil:
+              EmptyView()
+            }
+          }
           VStack(alignment: .leading) {
-            Toggle(
-              "Prompt for branch name during creation",
-              isOn: $store.promptForWorktreeCreation
-            )
-            .help("Ask for branch name and base ref before creating a worktree.")
-            Text("When enabled, you choose the branch name and where it branches from before creating the worktree.")
-              .foregroundStyle(.secondary)
+            Picker(selection: $store.archivedAutoDeletePeriod) {
+              Text("Never").tag(AutoDeletePeriod?.none)
+              ForEach(AutoDeletePeriod.allCases) { period in
+                Text(period.label).tag(AutoDeletePeriod?.some(period))
+              }
+            } label: {
+              Text("Auto-delete archived worktrees")
+              Text("Permanently removes archived worktrees after the selected period.")
+            }
+          }
+        }
+        Section("Copy Defaults") {
+          Toggle(isOn: $store.copyIgnoredOnWorktreeCreate) {
+            Text("Copy ignored files to new worktrees")
+            Text("Copies gitignored files from the main worktree.")
+          }
+          Toggle(isOn: $store.copyUntrackedOnWorktreeCreate) {
+            Text("Copy untracked files to new worktrees")
+            Text("Copies untracked files from the main worktree.")
           }
         }
       }

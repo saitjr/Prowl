@@ -20,15 +20,56 @@ struct AppearanceSettingsView: View {
               }
             }
           }
-          VStack(alignment: .leading, spacing: 4) {
-            Text("Terminal theming follows Ghostty config")
-            Text("For example, add the following line to `~/.config/ghostty/config`")
+          VStack(alignment: .leading, spacing: 6) {
+            Text(
+              """
+              Terminal theming follows your Ghostty configuration. \
+              Browse [all built-in themes](https://iterm2colorschemes.com/), \
+              then add a dual-theme line such as:
+              """
+            )
             Text("theme = light:Monokai Pro Light Sun,dark:Dimmed Monokai")
               .monospaced()
+              .textSelection(.enabled)
+            HStack(spacing: 8) {
+              Button("Open Config") {
+                GhosttyRuntime.openGhosttyConfig()
+              }
+              .help("Open your Ghostty config file in the default text editor.")
+              Button("Reload") {
+                GhosttyRuntime.shared?.reloadAppConfig()
+              }
+              .help("Re-read the Ghostty config from disk and apply it to running terminals.")
+            }
+            .controlSize(.small)
           }
           .font(.footnote)
           .foregroundStyle(.secondary)
-          .textSelection(.enabled)
+        }
+        Section("Splits") {
+          Toggle(
+            "Dim unfocused split panes",
+            isOn: $store.dimUnfocusedSplits
+          )
+          .help("Fade split panes that aren't focused so the active one stands out.")
+        }
+        Section("Active Agents") {
+          Toggle(
+            "Show Active Agents panel automatically",
+            isOn: $store.autoShowActiveAgentsPanel
+          )
+          .help("Open the Active Agents panel when an agent is detected.")
+          Text("When enabled, hidden panels reopen as soon as an agent starts or updates.")
+            .foregroundStyle(.secondary)
+            .font(.callout)
+        }
+        Section("Default View") {
+          Picker("Launch in", selection: $store.defaultViewMode) {
+            ForEach(DefaultViewMode.allCases) { mode in
+              Text(mode.title).tag(mode)
+            }
+          }
+          .help("View Prowl starts in on launch. Shelf requires at least one worktree or folder.")
         }
         Section("Default Editor") {
           Picker(

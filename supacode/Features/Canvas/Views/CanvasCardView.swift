@@ -4,7 +4,20 @@ import SwiftUI
 struct CanvasCardView: View {
   let repositoryName: String
   let worktreeName: String
+  /// User-pinned icon for this card's repository, drawn before the
+  /// repo name in the title bar. `nil` keeps the historical text-only
+  /// title bar.
+  var repositoryIcon: RepositoryIconSource?
+  /// User-pinned color for this card's repository. When set, it tints
+  /// both the icon (if tintable) and the title-bar background as an
+  /// always-on identity strip.
+  var repositoryColor: Color?
+  /// Repo root URL, needed by `RepositoryIconImage` to resolve user
+  /// PNG/SVG filenames against the per-repo icons directory.
+  var repositoryRootURL: URL?
   let tree: SplitTree<GhosttySurfaceView>
+  let activeSurfaceID: UUID?
+  let unfocusedSplitOverlay: (fill: Color?, opacity: Double)
   let isFocused: Bool
   let isSelected: Bool
   let hasUnseenNotification: Bool
@@ -18,6 +31,8 @@ struct CanvasCardView: View {
   let onResizeEnd: () -> Void
   let onSplitOperation: (TerminalSplitTreeView.Operation) -> Void
   let onTitleBarTap: () -> Void
+  let onExpand: () -> Void
+  let onClose: () -> Void
 
   enum CardResizeEdge {
     case leading, trailing, top, bottom
@@ -44,6 +59,7 @@ struct CanvasCardView: View {
 
   // Gesture-driven drag state: does NOT trigger body re-evaluation
   @GestureState private var dragTranslation: CGSize = .zero
+  @State private var isHoveringTitleBar: Bool = false
 
   var body: some View {
     VStack(spacing: 0) {
@@ -106,6 +122,14 @@ struct CanvasCardView: View {
 
   private var titleBar: some View {
     HStack(spacing: 6) {
+      if let repositoryIcon, let repositoryRootURL {
+        RepositoryIconImage(
+          icon: repositoryIcon,
+          repositoryRootURL: repositoryRootURL,
+          tintColor: repositoryColor,
+          size: 12
+        )
+      }
       Text(repositoryName)
         .font(.caption.bold())
         .lineLimit(1)
@@ -114,6 +138,7 @@ struct CanvasCardView: View {
         .foregroundStyle(.secondary)
         .lineLimit(1)
       Spacer()
+      titleBarActions
     }
     .padding(.horizontal, 8)
     .frame(height: titleBarHeight)
@@ -121,6 +146,9 @@ struct CanvasCardView: View {
     .background(titleBarBackground)
     .accessibilityAddTraits(.isButton)
     .onTapGesture { onTitleBarTap() }
+    .onHover { hovering in
+      isHoveringTitleBar = hovering
+    }
     .gesture(
       DragGesture(coordinateSpace: .global)
         .updating($dragTranslation) { value, state, _ in
@@ -136,25 +164,79 @@ struct CanvasCardView: View {
     )
   }
 
+  private var titleBarActions: some View {
+    HStack(spacing: 2) {
+      Button {
+        onExpand()
+      } label: {
+        Image(systemName: "arrow.up.left.and.arrow.down.right")
+          .font(.caption2.weight(.semibold))
+          .frame(width: 18, height: 18)
+          .contentShape(.rect)
+      }
+      .buttonStyle(.plain)
+      .foregroundStyle(.secondary)
+      .help("Expand to tab view")
+      .accessibilityLabel("Expand card")
+
+      Button {
+        onClose()
+      } label: {
+        Image(systemName: "xmark")
+          .font(.caption2.weight(.semibold))
+          .frame(width: 18, height: 18)
+          .contentShape(.rect)
+      }
+      .buttonStyle(.plain)
+      .foregroundStyle(.secondary)
+      .help("Close card")
+      .accessibilityLabel("Close card")
+    }
+    .opacity(isHoveringTitleBar ? 1 : 0)
+    .allowsHitTesting(isHoveringTitleBar)
+    .animation(.easeInOut(duration: 0.15), value: isHoveringTitleBar)
+  }
+
   @ViewBuilder
   private var titleBarBackground: some View {
+    // Layering, back-to-front:
+    //
+    //  1. selected-but-unfocused accent (subtle, sits under the bar
+    //     material — same behavior as before this feature shipped)
+    //  2. `.bar` material substrate
+    //  3. **either** the notification orange **or** the repo color
+    //     identity strip — never both. Without this mutual exclusion
+    //     the orange used to muddle into the repo color (e.g. a blue
+    //     repo's notification looked brownish-grey instead of the
+    //     intended attention-grabbing orange). The notification wins
+    //     on top with a much higher alpha (0.55) than the previous
+    //     under-bar 0.3 so the unread signal actually pops.
     ZStack {
-      if hasUnseenNotification {
-        Color.orange.opacity(0.3)
-      }
       if isSelected && !isFocused {
         Color.accentColor.opacity(0.12)
       }
       Rectangle()
         .fill(.bar)
         .opacity(0.9)
+      if hasUnseenNotification {
+        Color.orange.opacity(0.55)
+      } else if let repositoryColor {
+        repositoryColor.opacity(isFocused ? 0.18 : 0.10)
+      }
     }
   }
 
   private var terminalContent: some View {
-    TerminalSplitTreeView(tree: tree, pinnedSize: cardSize, action: onSplitOperation)
-      .frame(width: cardSize.width, height: cardSize.height)
-      .allowsHitTesting(isFocused && !showsSelectionShield)
+    TerminalSplitTreeView(
+      tree: tree,
+      pinnedSize: cardSize,
+      activeSurfaceID: activeSurfaceID,
+      unfocusedSplitOverlay: unfocusedSplitOverlay,
+      hasNotification: { _ in false },
+      action: onSplitOperation
+    )
+    .frame(width: cardSize.width, height: cardSize.height)
+    .allowsHitTesting(isFocused && !showsSelectionShield)
   }
 
   private var selectionShield: some View {

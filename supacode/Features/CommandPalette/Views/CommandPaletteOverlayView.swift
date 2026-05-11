@@ -347,18 +347,19 @@ private struct CommandPaletteRowView: View {
 
   private var badge: String? {
     switch row.kind {
-    case .checkForUpdates, .openRepository, .openSettings, .newWorktree, .refreshWorktrees,
-      .installCLI, .ghosttyCommand,
-      .openPullRequest, .markPullRequestReady, .mergePullRequest, .closePullRequest, .copyFailingJobURL,
+    case .checkForUpdates, .openRepository, .openSettings, .newWorktree, .viewArchivedWorktrees,
+      .refreshWorktrees, .installCLI, .jumpToLatestUnread, .ghosttyCommand,
+      .openPullRequest, .openRepositoryOnCodeHost, .markPullRequestReady, .mergePullRequest, .closePullRequest,
+      .copyFailingJobURL,
       .copyCiFailureLogs,
-      .rerunFailedJobs, .openFailingCheckDetails, .worktreeSelect:
+      .rerunFailedJobs, .openFailingCheckDetails, .worktreeSelect, .changeFocusedTabIcon:
       return nil
     case .removeWorktree:
       return "Remove"
     case .archiveWorktree:
       return "Archive"
     #if DEBUG
-      case .debugTestToast:
+      case .debugTestToast, .debugSimulateUpdateFound:
         return "Debug"
     #endif
     }
@@ -374,11 +375,15 @@ private struct CommandPaletteRowView: View {
       return "gearshape"
     case .newWorktree:
       return "plus"
+    case .viewArchivedWorktrees:
+      return "archivebox"
     case .refreshWorktrees:
       return "arrow.clockwise"
+    case .jumpToLatestUnread:
+      return "bell.badge"
     case .ghosttyCommand:
       return "terminal"
-    case .openPullRequest:
+    case .openPullRequest, .openRepositoryOnCodeHost:
       return "arrow.up.right.square"
     case .markPullRequestReady:
       return "checkmark.seal"
@@ -398,6 +403,8 @@ private struct CommandPaletteRowView: View {
       return "terminal"
     case .worktreeSelect:
       return nil
+    case .changeFocusedTabIcon:
+      return "rectangle.on.rectangle"
     case .removeWorktree:
       return "trash"
     case .archiveWorktree:
@@ -405,22 +412,25 @@ private struct CommandPaletteRowView: View {
     #if DEBUG
       case .debugTestToast:
         return "ladybug"
+      case .debugSimulateUpdateFound:
+        return "ladybug"
     #endif
     }
   }
 
   private var emphasis: Bool {
     switch row.kind {
-    case .checkForUpdates, .openRepository, .openSettings, .newWorktree, .refreshWorktrees,
-      .installCLI, .ghosttyCommand,
-      .openPullRequest, .markPullRequestReady, .mergePullRequest, .closePullRequest, .copyFailingJobURL,
+    case .checkForUpdates, .openRepository, .openSettings, .newWorktree, .viewArchivedWorktrees,
+      .refreshWorktrees, .installCLI, .jumpToLatestUnread, .ghosttyCommand,
+      .openPullRequest, .openRepositoryOnCodeHost, .markPullRequestReady, .mergePullRequest, .closePullRequest,
+      .copyFailingJobURL,
       .copyCiFailureLogs,
-      .rerunFailedJobs, .openFailingCheckDetails:
+      .rerunFailedJobs, .openFailingCheckDetails, .changeFocusedTabIcon:
       return true
     case .worktreeSelect, .removeWorktree, .archiveWorktree:
       return false
     #if DEBUG
-      case .debugTestToast:
+      case .debugTestToast, .debugSimulateUpdateFound:
         return true
     #endif
     }
@@ -503,16 +513,20 @@ private struct CommandPaletteRowView: View {
       base = "Open Settings"
     case .newWorktree:
       base = "New Worktree"
+    case .viewArchivedWorktrees:
+      base = "View Archived Worktrees"
     case .refreshWorktrees:
       base = "Refresh Worktrees"
+    case .jumpToLatestUnread:
+      base = "Jump to Latest Unread"
     case .ghosttyCommand:
       base = row.title
     case .removeWorktree:
       base = "Remove \(row.title)"
     case .archiveWorktree:
       base = "Archive \(row.title)"
-    case .openPullRequest:
-      base = "Open pull request on GitHub"
+    case .openPullRequest, .openRepositoryOnCodeHost:
+      base = row.title
     case .markPullRequestReady:
       base = "Mark pull request ready for review"
     case .mergePullRequest:
@@ -529,8 +543,10 @@ private struct CommandPaletteRowView: View {
       base = "Open failing check details"
     case .installCLI:
       base = "Install Command Line Tool"
+    case .changeFocusedTabIcon:
+      base = "Change Tab Icon"
     #if DEBUG
-      case .debugTestToast:
+      case .debugTestToast, .debugSimulateUpdateFound:
         base = row.title
     #endif
     }

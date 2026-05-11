@@ -6,10 +6,13 @@ struct TerminalTabBarView: View {
   let splitHorizontally: () -> Void
   let splitVertically: () -> Void
   let canSplit: Bool
+  let renameTab: (TerminalTabID) -> Void
+  let changeIcon: (TerminalTabID) -> Void
   let closeTab: (TerminalTabID) -> Void
   let closeOthers: (TerminalTabID) -> Void
   let closeToRight: (TerminalTabID) -> Void
   let closeAll: () -> Void
+  let hasNotification: (TerminalTabID) -> Bool
   @Environment(\.controlActiveState)
   private var activeState
 
@@ -17,10 +20,13 @@ struct TerminalTabBarView: View {
     HStack(spacing: 0) {
       TerminalTabsView(
         manager: manager,
+        renameTab: renameTab,
+        changeIcon: changeIcon,
         closeTab: closeTab,
         closeOthers: closeOthers,
         closeToRight: closeToRight,
-        closeAll: closeAll
+        closeAll: closeAll,
+        hasNotification: hasNotification
       )
       Spacer(minLength: 0)
       TerminalTabBarTrailingAccessories(

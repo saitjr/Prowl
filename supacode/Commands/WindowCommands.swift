@@ -1,10 +1,14 @@
+import ComposableArchitecture
 import SwiftUI
 
 struct WindowCommands: Commands {
+  @Bindable var store: StoreOf<AppFeature>
+  let terminalManager: WorktreeTerminalManager
   let ghosttyShortcuts: GhosttyShortcutManager
   let resolvedKeybindings: ResolvedKeybindingMap
-  let hotkeyWindowShortcut: KeyboardShortcut?
-  let hotkeyWindowShortcutDisplay: String?
+  @Bindable var settingsWindowManager: SettingsWindowManager
+  @Dependency(SettingsWindowClient.self) private var settingsWindowClient
+  @FocusedValue(\.closeTabAction) private var closeTabAction
   @FocusedValue(\.closeSurfaceAction) private var closeSurfaceAction
   @FocusedValue(\.selectPreviousTerminalTabAction) private var selectPreviousTerminalTabAction
   @FocusedValue(\.selectNextTerminalTabAction) private var selectNextTerminalTabAction
@@ -17,7 +21,15 @@ struct WindowCommands: Commands {
 
   var body: some Commands {
     let closeSurfaceHotkey = ghosttyShortcuts.keyboardShortcut(for: "close_surface")
-    let isCloseSurfaceOverlapping = closeSurfaceHotkey?.key == "w" && closeSurfaceHotkey?.modifiers == .command
+    let closeTabHotkey = ghosttyShortcuts.keyboardShortcut(for: "close_tab")
+    let shelfHasOpenBooks =
+      store.repositories.isShelfActive && !store.repositories.openedWorktreeIDs.isEmpty
+    let closeWindowShortcut = WindowCloseShortcutPolicy.closeWindowShortcut(
+      closeSurfaceShortcut: closeSurfaceHotkey,
+      closeTabShortcut: closeTabHotkey,
+      hasTerminalCloseTarget: closeTabAction != nil || closeSurfaceAction != nil,
+      shelfHasOpenBooks: shelfHasOpenBooks
+    )
 
     CommandGroup(replacing: .saveItem) {
       Button("Close Window", systemImage: "xmark") {
@@ -25,12 +37,27 @@ struct WindowCommands: Commands {
       }
       .modifier(
         KeyboardShortcutModifier(
-          shortcut: !isCloseSurfaceOverlapping || closeSurfaceAction == nil ? .init("w") : nil
+          shortcut: closeWindowShortcut
         )
       )
     }
 
+    let mainWindowTitle = WindowTitle.compute(
+      repositories: store.repositories,
+      terminalManager: terminalManager
+    )
+    let isSettingsOpen = settingsWindowManager.isOpen
+
     CommandGroup(replacing: .windowArrangement) {
+      let hotkeyWindowShortcut =
+        store.settings.hotkeyWindow.isEnabled
+        ? store.settings.hotkeyWindow.hotkey?.keyboardShortcut
+        : nil
+      let hotkeyWindowShortcutDisplay =
+        store.settings.hotkeyWindow.isEnabled
+        ? store.settings.hotkeyWindow.hotkey?.display
+        : nil
+
       Button("Toggle Hotkey Window") {
         HotkeyWindowManager.shared.toggle()
       }
@@ -40,16 +67,6 @@ struct WindowCommands: Commands {
           ?? "Toggle hotkey window"
       )
 
-      Divider()
-
-      Button("Prowl") {
-        HotkeyWindowManager.shared.hideIfVisible()
-        if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "main" }) {
-          window.makeKeyAndOrderFront(nil)
-          NSApp.activate(ignoringOtherApps: true)
-        }
-      }
-      .help("Show main window")
       Divider()
 
       Button("Select Previous Tab") {
@@ -135,7 +152,45 @@ struct WindowCommands: Commands {
         )
         .disabled(selectTerminalPaneRightAction == nil)
       }
+
+      Divider()
+
+      Button(mainWindowTitle) {
+        NSApp.surfaceMainWindow()
+      }
+      .help("Show main window")
+
+      if isSettingsOpen {
+        Button("Settings") {
+          settingsWindowClient.show()
+        }
+        .help("Show Settings window")
+      }
     }
+  }
+}
+
+enum WindowCloseShortcutPolicy {
+  static func closeWindowShortcut(
+    closeSurfaceShortcut: KeyboardShortcut?,
+    closeTabShortcut: KeyboardShortcut?,
+    hasTerminalCloseTarget: Bool,
+    shelfHasOpenBooks: Bool = false
+  ) -> KeyboardShortcut? {
+    // `shelfHasOpenBooks` keeps Cmd+W with the terminal layer through the brief
+    // gap between closing a book's last tab and Shelf advancing to the next
+    // book. Without it, `hasTerminalCloseTarget` momentarily flips false during
+    // that transition, which would let an auto-repeated Cmd+W press fall
+    // through to the "Close Window" menu shortcut and shut the window.
+    let terminalOwnsCommandW = hasTerminalCloseTarget || shelfHasOpenBooks
+    if terminalOwnsCommandW && (isCommandW(closeSurfaceShortcut) || isCommandW(closeTabShortcut)) {
+      return nil
+    }
+    return KeyboardShortcut("w")
+  }
+
+  private static func isCommandW(_ shortcut: KeyboardShortcut?) -> Bool {
+    shortcut?.key == "w" && shortcut?.modifiers == .command
   }
 }
 

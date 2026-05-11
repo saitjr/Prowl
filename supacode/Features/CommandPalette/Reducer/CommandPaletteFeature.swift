@@ -38,7 +38,9 @@ struct CommandPaletteFeature {
     case openRepository
     case removeWorktree(Worktree.ID, Repository.ID)
     case archiveWorktree(Worktree.ID, Repository.ID)
+    case viewArchivedWorktrees
     case refreshWorktrees
+    case jumpToLatestUnread
     case ghosttyCommand(String)
     case openPullRequest(Worktree.ID)
     case markPullRequestReady(Worktree.ID)
@@ -49,8 +51,10 @@ struct CommandPaletteFeature {
     case rerunFailedJobs(Worktree.ID)
     case openFailingCheckDetails(Worktree.ID)
     case installCLI
+    case changeFocusedTabIcon(Worktree.ID)
     #if DEBUG
       case debugTestToast(RepositoriesFeature.StatusToast)
+      case debugSimulateUpdateFound
     #endif
   }
 
@@ -208,29 +212,40 @@ struct CommandPaletteFeature {
     )
     items.append(
       CommandPaletteItem(
+        id: CommandPaletteItemID.globalJumpToLatestUnread,
+        title: "Jump to Latest Unread",
+        subtitle: nil,
+        kind: .jumpToLatestUnread
+      )
+    )
+    items.append(
+      CommandPaletteItem(
+        id: CommandPaletteItemID.globalViewArchivedWorktrees,
+        title: "View Archived Worktrees",
+        subtitle: nil,
+        kind: .viewArchivedWorktrees
+      )
+    )
+    items.append(
+      CommandPaletteItem(
         id: CommandPaletteItemID.globalInstallCLI,
         title: "Install Command Line Tool",
         subtitle: nil,
         kind: .installCLI
       )
     )
-    if repositories.selectedTerminalWorktree != nil {
+    if let terminalWorktree = repositories.selectedTerminalWorktree {
+      items.append(
+        CommandPaletteItem(
+          id: CommandPaletteItemID.changeFocusedTabIcon(terminalWorktree.id),
+          title: "Change Tab Icon...",
+          subtitle: terminalWorktree.name,
+          kind: .changeFocusedTabIcon(terminalWorktree.id)
+        )
+      )
       items.append(contentsOf: ghosttyCommandItems(ghosttyCommands))
     }
-    if let selectedWorktreeID = repositories.selectedWorktreeID,
-      let repositoryID = repositories.repositoryID(containing: selectedWorktreeID),
-      repositories.repositories[id: repositoryID]?.capabilities.supportsPullRequests == true,
-      let pullRequest = repositories.worktreeInfo(for: selectedWorktreeID)?.pullRequest,
-      pullRequest.number > 0,
-      pullRequest.state.uppercased() != "CLOSED"
-    {
-      let pullRequestActions = pullRequestItems(
-        pullRequest: pullRequest,
-        worktreeID: selectedWorktreeID,
-        repositoryID: repositoryID
-      )
-      items.append(contentsOf: pullRequestActions)
-    }
+    items.append(contentsOf: selectedCodeHostItems(from: repositories))
     #if DEBUG
       items.append(contentsOf: debugToastItems())
     #endif
@@ -258,16 +273,59 @@ struct CommandPaletteFeature {
       ids.append(contentsOf: CommandPaletteItemID.pullRequestIDs(repositoryID: repository.id))
       for worktree in repository.worktrees {
         ids.append(CommandPaletteItemID.worktreeSelect(worktree.id))
+        ids.append(CommandPaletteItemID.changeFocusedTabIcon(worktree.id))
       }
     }
     return ids
   }
 }
 
+private func selectedCodeHostItems(
+  from repositories: RepositoriesFeature.State
+) -> [CommandPaletteItem] {
+  guard
+    let selectedWorktreeID = repositories.selectedWorktreeID,
+    let repositoryID = repositories.repositoryID(containing: selectedWorktreeID),
+    let repository = repositories.repositories[id: repositoryID]
+  else {
+    return []
+  }
+
+  let codeHost = repositories.codeHost(for: repositoryID)
+  let pullRequest = repositories.worktreeInfo(for: selectedWorktreeID)?.pullRequest
+  if repository.capabilities.supportsPullRequests,
+    let pullRequest,
+    pullRequest.number > 0,
+    pullRequest.state.uppercased() != "CLOSED"
+  {
+    return pullRequestItems(
+      pullRequest: pullRequest,
+      worktreeID: selectedWorktreeID,
+      repositoryID: repositoryID,
+      codeHost: codeHost
+    )
+  }
+
+  guard repository.capabilities.supportsCodeHost else {
+    return []
+  }
+
+  return [
+    CommandPaletteItem(
+      id: CommandPaletteItemID.pullRequestOpen(repositoryID),
+      title: "Open Repository on \(codeHost.displayName)",
+      subtitle: repository.name,
+      kind: .openRepositoryOnCodeHost(selectedWorktreeID),
+      priorityTier: 2
+    )
+  ]
+}
+
 private func pullRequestItems(
   pullRequest: GithubPullRequest,
   worktreeID: Worktree.ID,
-  repositoryID: Repository.ID
+  repositoryID: Repository.ID,
+  codeHost: CodeHost
 ) -> [CommandPaletteItem] {
   let state = pullRequest.state.uppercased()
   let isOpen = state == "OPEN"
@@ -341,11 +399,11 @@ private func pullRequestItems(
   var items: [CommandPaletteItem] = [
     CommandPaletteItem(
       id: CommandPaletteItemID.pullRequestOpen(repositoryID),
-      title: "Open PR on GitHub",
+      title: "Open Pull Request on \(codeHost.displayName)",
       subtitle: pullRequest.title,
       kind: .openPullRequest(worktreeID),
       priorityTier: 2
-    ),
+    )
   ]
 
   if let readyItem = makeReadyItem() {
@@ -427,6 +485,12 @@ private func makeClosePullRequestItem(
         subtitle: "Simulates a success toast",
         kind: .debugTestToast(.success("Pull request merged"))
       ),
+      CommandPaletteItem(
+        id: "debug.update.simulate-found",
+        title: "[Debug] Simulate Update Found",
+        subtitle: "Shows the toolbar update badge without querying Sparkle",
+        kind: .debugSimulateUpdateFound
+      ),
     ]
   }
 #endif
@@ -438,6 +502,8 @@ private enum CommandPaletteItemID {
   static let globalOpenRepository = "global.open-repository"
   static let globalNewWorktree = "global.new-worktree"
   static let globalRefreshWorktrees = "global.refresh-worktrees"
+  static let globalJumpToLatestUnread = "global.jump-to-latest-unread"
+  static let globalViewArchivedWorktrees = "global.view-archived-worktrees"
   static let globalInstallCLI = "global.install-cli"
 
   static var globalIDs: [CommandPaletteItem.ID] {
@@ -447,12 +513,18 @@ private enum CommandPaletteItemID {
       globalOpenRepository,
       globalNewWorktree,
       globalRefreshWorktrees,
+      globalJumpToLatestUnread,
+      globalViewArchivedWorktrees,
       globalInstallCLI,
     ]
   }
 
   static func worktreeSelect(_ worktreeID: Worktree.ID) -> CommandPaletteItem.ID {
     "worktree.\(worktreeID).select"
+  }
+
+  static func changeFocusedTabIcon(_ worktreeID: Worktree.ID) -> CommandPaletteItem.ID {
+    "terminal.\(worktreeID).change-focused-tab-icon"
   }
 
   static func ghosttyCommand(_ command: GhosttyCommand) -> CommandPaletteItem.ID {
@@ -538,28 +610,22 @@ private func commandPaletteRecencyScore(
 }
 
 private func delegateAction(for kind: CommandPaletteItem.Kind) -> CommandPaletteFeature.Delegate {
+  if let appAction = appDelegateAction(for: kind) {
+    return appAction
+  }
   switch kind {
   case .worktreeSelect(let id):
     return .selectWorktree(id)
-  case .checkForUpdates:
-    return .checkForUpdates
-  case .openSettings:
-    return .openSettings
-  case .newWorktree:
-    return .newWorktree
-  case .openRepository:
-    return .openRepository
   case .removeWorktree(let worktreeID, let repositoryID):
     return .removeWorktree(worktreeID, repositoryID)
   case .archiveWorktree(let worktreeID, let repositoryID):
     return .archiveWorktree(worktreeID, repositoryID)
-  case .refreshWorktrees:
-    return .refreshWorktrees
-  case .installCLI:
-    return .installCLI
   case .ghosttyCommand(let action):
     return .ghosttyCommand(action)
+  case .changeFocusedTabIcon(let worktreeID):
+    return .changeFocusedTabIcon(worktreeID)
   case .openPullRequest,
+    .openRepositoryOnCodeHost,
     .markPullRequestReady,
     .mergePullRequest,
     .closePullRequest,
@@ -571,7 +637,41 @@ private func delegateAction(for kind: CommandPaletteItem.Kind) -> CommandPalette
   #if DEBUG
     case .debugTestToast(let toast):
       return .debugTestToast(toast)
+    case .debugSimulateUpdateFound:
+      return .debugSimulateUpdateFound
   #endif
+  case .checkForUpdates,
+    .openSettings,
+    .newWorktree,
+    .openRepository,
+    .viewArchivedWorktrees,
+    .refreshWorktrees,
+    .jumpToLatestUnread,
+    .installCLI:
+    fatalError("appDelegateAction should handle app-level command palette actions")
+  }
+}
+
+private func appDelegateAction(for kind: CommandPaletteItem.Kind) -> CommandPaletteFeature.Delegate? {
+  switch kind {
+  case .checkForUpdates:
+    return .checkForUpdates
+  case .openSettings:
+    return .openSettings
+  case .newWorktree:
+    return .newWorktree
+  case .openRepository:
+    return .openRepository
+  case .viewArchivedWorktrees:
+    return .viewArchivedWorktrees
+  case .refreshWorktrees:
+    return .refreshWorktrees
+  case .jumpToLatestUnread:
+    return .jumpToLatestUnread
+  case .installCLI:
+    return .installCLI
+  default:
+    return nil
   }
 }
 
@@ -579,7 +679,8 @@ private func pullRequestDelegateAction(
   for kind: CommandPaletteItem.Kind
 ) -> CommandPaletteFeature.Delegate? {
   switch kind {
-  case .openPullRequest(let worktreeID):
+  case .openPullRequest(let worktreeID),
+    .openRepositoryOnCodeHost(let worktreeID):
     return .openPullRequest(worktreeID)
   case .markPullRequestReady(let worktreeID):
     return .markPullRequestReady(worktreeID)
@@ -602,12 +703,15 @@ private func pullRequestDelegateAction(
     .openRepository,
     .removeWorktree,
     .archiveWorktree,
+    .viewArchivedWorktrees,
     .refreshWorktrees,
+    .jumpToLatestUnread,
     .installCLI,
-    .ghosttyCommand:
+    .ghosttyCommand,
+    .changeFocusedTabIcon:
     return nil
   #if DEBUG
-    case .debugTestToast:
+    case .debugTestToast, .debugSimulateUpdateFound:
       return nil
   #endif
   }

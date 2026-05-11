@@ -5,10 +5,29 @@ struct TerminalClient {
   var send: @MainActor @Sendable (Command) -> Void
   var events: @MainActor @Sendable () -> AsyncStream<Event>
   var canvasFocusedWorktreeID: @MainActor @Sendable () -> Worktree.ID?
+  var latestUnreadNotification: @MainActor @Sendable () -> NotificationLocation?
+  var focusSurface: @MainActor @Sendable (Worktree.ID, UUID) -> Bool
+  var markNotificationRead: @MainActor @Sendable (Worktree.ID, UUID) -> Void
+  var markNotificationsReadForSurface: @MainActor @Sendable (Worktree.ID, UUID) -> Void
 
   enum Command: Equatable {
     case createTab(Worktree, runSetupScriptIfNew: Bool)
-    case createTabWithInput(Worktree, input: String, runSetupScriptIfNew: Bool)
+    case createTabWithInput(
+      Worktree,
+      input: String,
+      runSetupScriptIfNew: Bool,
+      autoCloseOnSuccess: Bool,
+      customCommandName: String? = nil,
+      customCommandIcon: String? = nil
+    )
+    case createSplitWithInput(
+      Worktree,
+      direction: UserCustomSplitDirection,
+      input: String,
+      autoCloseOnSuccess: Bool,
+      customCommandName: String? = nil,
+      customCommandIcon: String? = nil
+    )
     case createTabInDirectory(Worktree, directory: URL)
     case ensureInitialTab(Worktree, runSetupScriptIfNew: Bool, focusing: Bool)
     case runScript(Worktree, script: String)
@@ -25,19 +44,24 @@ struct TerminalClient {
     case prune(Set<Worktree.ID>)
     case setNotificationsEnabled(Bool)
     case setCommandFinishedNotification(enabled: Bool, threshold: Int)
+    case setAgentDetectionEnabled(Bool)
     case setCanvasMode(Bool)
     case setSelectedWorktreeID(Worktree.ID?)
     case saveLayoutSnapshot
     case restoreLayoutSnapshot(worktrees: [Worktree])
+    case presentTabIconPicker(Worktree)
   }
 
   enum Event: Equatable {
-    case notificationReceived(worktreeID: Worktree.ID, title: String, body: String)
+    case customCommandSucceeded(worktreeID: Worktree.ID, name: String, durationMs: Int)
+    case notificationReceived(worktreeID: Worktree.ID, surfaceID: UUID, title: String, body: String)
     case notificationIndicatorChanged(count: Int)
     case tabCreated(worktreeID: Worktree.ID)
-    case tabClosed(worktreeID: Worktree.ID)
+    case tabClosed(worktreeID: Worktree.ID, remainingTabs: Int)
     case focusChanged(worktreeID: Worktree.ID, surfaceID: UUID)
     case taskStatusChanged(worktreeID: Worktree.ID, status: WorktreeTaskStatus)
+    case agentEntryChanged(ActiveAgentEntry)
+    case agentEntryRemoved(ActiveAgentEntry.ID)
     case runScriptStatusChanged(worktreeID: Worktree.ID, isRunning: Bool)
     case commandPaletteToggleRequested(worktreeID: Worktree.ID)
     case setupScriptConsumed(worktreeID: Worktree.ID)
@@ -51,13 +75,21 @@ extension TerminalClient: DependencyKey {
   static let liveValue = TerminalClient(
     send: { _ in fatalError("TerminalClient.send not configured") },
     events: { fatalError("TerminalClient.events not configured") },
-    canvasFocusedWorktreeID: { nil }
+    canvasFocusedWorktreeID: { nil },
+    latestUnreadNotification: { nil },
+    focusSurface: { _, _ in false },
+    markNotificationRead: { _, _ in },
+    markNotificationsReadForSurface: { _, _ in }
   )
 
   static let testValue = TerminalClient(
     send: { _ in },
     events: { AsyncStream { $0.finish() } },
-    canvasFocusedWorktreeID: { nil }
+    canvasFocusedWorktreeID: { nil },
+    latestUnreadNotification: { nil },
+    focusSurface: { _, _ in false },
+    markNotificationRead: { _, _ in },
+    markNotificationsReadForSurface: { _, _ in }
   )
 }
 

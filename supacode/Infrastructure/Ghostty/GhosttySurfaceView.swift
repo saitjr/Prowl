@@ -99,11 +99,17 @@ final class GhosttySurfaceView: NSView, Identifiable {
   private var debugID: String {
     String(id.uuidString.prefix(8))
   }
+  var debugIdentifierForLogging: String {
+    debugID
+  }
   let bridge: GhosttySurfaceBridge
   private(set) var surface: ghostty_surface_t?
   private var surfaceRef: GhosttyRuntime.SurfaceReference?
   private let workingDirectoryCString: UnsafeMutablePointer<CChar>?
   private let initialInputCString: UnsafeMutablePointer<CChar>?
+  private let envVarCStrings: [UnsafeMutablePointer<CChar>]
+  private let envVarEntries: UnsafeMutablePointer<ghostty_env_var_s>?
+  private let envVarCount: Int
   private let fontSize: Float32
   private let context: ghostty_surface_context_e
   private let skipsSurfaceCreationForTesting: Bool
@@ -112,6 +118,7 @@ final class GhosttySurfaceView: NSView, Identifiable {
   private var lastPerformKeyEvent: TimeInterval?
   private var currentCursor: NSCursor = .iBeam
   private var focused = false
+  private var detachedFocusClearTask: Task<Void, Never>?
   private var markedText = NSMutableAttributedString()
   private var keyboardLayoutChangeKeyUpSuppression: KeyboardLayoutChangeKeyUpSuppression?
   private var keyTextAccumulator: [String]?
@@ -218,6 +225,7 @@ final class GhosttySurfaceView: NSView, Identifiable {
     initialInput: String? = nil,
     fontSize: Float32? = nil,
     context: ghostty_surface_context_e,
+    environment: [String: String] = [:],
     skipsSurfaceCreationForTesting: Bool = false
   ) {
     self.runtime = runtime
@@ -237,6 +245,32 @@ final class GhosttySurfaceView: NSView, Identifiable {
       initialInputCString = initialInput.withCString { strdup($0) }
     } else {
       initialInputCString = nil
+    }
+    let sortedEnv = environment.sorted { $0.key < $1.key }
+    var allocatedStrings: [UnsafeMutablePointer<CChar>] = []
+    allocatedStrings.reserveCapacity(sortedEnv.count * 2)
+    for (key, value) in sortedEnv {
+      guard let keyPtr = key.withCString({ strdup($0) }),
+        let valuePtr = value.withCString({ strdup($0) })
+      else { continue }
+      allocatedStrings.append(keyPtr)
+      allocatedStrings.append(valuePtr)
+    }
+    envVarCStrings = allocatedStrings
+    let pairCount = allocatedStrings.count / 2
+    if pairCount > 0 {
+      let entries = UnsafeMutablePointer<ghostty_env_var_s>.allocate(capacity: pairCount)
+      for index in 0..<pairCount {
+        entries[index] = ghostty_env_var_s(
+          key: UnsafePointer(allocatedStrings[index * 2]),
+          value: UnsafePointer(allocatedStrings[index * 2 + 1])
+        )
+      }
+      envVarEntries = entries
+      envVarCount = pairCount
+    } else {
+      envVarEntries = nil
+      envVarCount = 0
     }
     super.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
     wantsLayer = true
@@ -274,6 +308,12 @@ final class GhosttySurfaceView: NSView, Identifiable {
     }
     if let initialInputCString {
       free(initialInputCString)
+    }
+    if let envVarEntries {
+      envVarEntries.deallocate()
+    }
+    for pointer in envVarCStrings {
+      free(pointer)
     }
   }
 
@@ -379,9 +419,24 @@ final class GhosttySurfaceView: NSView, Identifiable {
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
     if window == nil {
-      // SwiftUI can temporarily detach a pane while rebuilding split/zoom layout.
-      // If we keep the stale local focus bit, detached panes still intercept bindings.
-      focusDidChange(false)
+      // SwiftUI can temporarily detach a pane while rebuilding split/zoom
+      // layout — or when another SwiftUI subtree (e.g. Shelf) takes over
+      // hosting the same surface. Clearing the focused bit immediately
+      // here is wrong for the re-attach case: AppKit silently resigns the
+      // surface without a call path we can observe, and same-window
+      // re-attach does not trigger `becomeFirstResponder`, so the focused
+      // bit never recovers. Delay the clear so a prompt re-attach
+      // cancels it; only when the surface truly stays detached past the
+      // grace window do we flip the bit.
+      detachedFocusClearTask?.cancel()
+      detachedFocusClearTask = Task { @MainActor [weak self] in
+        try? await ContinuousClock().sleep(for: .milliseconds(150))
+        guard !Task.isCancelled, let self, self.window == nil else { return }
+        focusDidChange(false)
+      }
+    } else {
+      detachedFocusClearTask?.cancel()
+      detachedFocusClearTask = nil
     }
     updateScreenObservers()
     updateContentScale()
@@ -460,6 +515,12 @@ final class GhosttySurfaceView: NSView, Identifiable {
   func focusDidChange(_ focused: Bool) {
     guard surface != nil else { return }
     guard self.focused != focused else { return }
+    // Retained as the single diagnostic entry point for focus regressions.
+    // Filter `make log-stream | grep '\[ShelfFocus\] focusDidChange'` to
+    // trace every focused-bit transition across the app.
+    SupaLogger("SurfaceFocus").info(
+      "[ShelfFocus] focusDidChange surface=\(debugID) \(self.focused) -> \(focused)"
+    )
     self.focused = focused
     if focused {
       bridge.state.bellCount = 0
@@ -894,6 +955,7 @@ final class GhosttySurfaceView: NSView, Identifiable {
   }
 
   func updateSurfaceSize() {
+    resumeDeferredOcclusionIfNeeded()
     guard let surface else { return }
     // When pinnedSize is set (canvas mode), convertToBacking() includes the
     // .scaleEffect() layer transform, producing scale-dependent backing sizes.
@@ -983,6 +1045,10 @@ final class GhosttySurfaceView: NSView, Identifiable {
     config.working_directory = workingDirectoryCString.map { UnsafePointer($0) }
     config.initial_input = initialInputCString.map { UnsafePointer($0) }
     config.context = context
+    if let envVarEntries, envVarCount > 0 {
+      config.env_vars = envVarEntries
+      config.env_var_count = envVarCount
+    }
     surface = ghostty_surface_new(app, &config)
     bridge.surface = surface
     occlusionState.reset()
@@ -1009,6 +1075,14 @@ final class GhosttySurfaceView: NSView, Identifiable {
   func setOcclusion(_ visible: Bool) {
     guard let surface else {
       guard skipsSurfaceCreationForTesting else { return }
+      // Occluding (pausing render) is always safe, even without a view
+      // hierarchy. This handles restored surfaces that haven't been attached
+      // to a window yet.
+      if !visible {
+        guard occlusionState.prepareToApply(false) else { return }
+        onOcclusionAppliedForTesting?(false)
+        return
+      }
       guard isReadyToApplyOcclusion else {
         if occlusionState.desired != visible {
           surfaceLogger.info(
@@ -1021,6 +1095,15 @@ final class GhosttySurfaceView: NSView, Identifiable {
       }
       guard occlusionState.prepareToApply(visible) else { return }
       onOcclusionAppliedForTesting?(visible)
+      return
+    }
+    // Occluding (pausing render) is always safe, even without a view
+    // hierarchy. This stops restored surfaces from spinning the GPU when
+    // they are not displayed.
+    if !visible {
+      guard occlusionState.prepareToApply(false) else { return }
+      onOcclusionAppliedForTesting?(false)
+      ghostty_surface_set_occlusion(surface, false)
       return
     }
     guard isReadyToApplyOcclusion else {
@@ -1042,12 +1125,12 @@ final class GhosttySurfaceView: NSView, Identifiable {
     // Re-parenting can temporarily detach the Metal layer from the visible
     // tree and pause Ghostty's renderer. Invalidate the applied cache so the
     // currently desired occlusion value is sent again after reattachment.
-    surfaceLogger.info(
-      "[CanvasExit] attachmentChange surface=\(debugID) "
-        + "desired=\(String(describing: occlusionState.desired)) "
-        + "attached=\(hasAttachedSuperview) window=\(hasAttachedWindow)"
-    )
     _ = occlusionState.invalidateForAttachmentChange()
+    if superview == nil {
+      DispatchQueue.main.async { [weak self] in
+        self?.scrollWrapper?.ensureSurfaceAttached()
+      }
+    }
     guard isReadyToApplyOcclusion else { return }
     DispatchQueue.main.async { [weak self] in
       self?.reapplyOcclusionIfNeeded()
@@ -1058,12 +1141,17 @@ final class GhosttySurfaceView: NSView, Identifiable {
     handleAttachmentChange()
   }
 
+  func resumeDeferredOcclusionIfNeededForTesting() {
+    resumeDeferredOcclusionIfNeeded()
+  }
+
+  private func resumeDeferredOcclusionIfNeeded() {
+    guard isReadyToApplyOcclusion else { return }
+    reapplyOcclusionIfNeeded()
+  }
+
   private func reapplyOcclusionIfNeeded() {
     guard isReadyToApplyOcclusion, let desired = occlusionState.desired else { return }
-    surfaceLogger.info(
-      "[CanvasExit] reapplyOcclusion surface=\(debugID) desired=\(desired) "
-        + "attached=\(hasAttachedSuperview) window=\(hasAttachedWindow)"
-    )
     setOcclusion(desired)
   }
 
@@ -1120,10 +1208,16 @@ final class GhosttySurfaceView: NSView, Identifiable {
     guard event.type == .keyDown else { return false }
     let isFontSizeShortcut = matchesFontSizeShortcut(event: event)
     guard let surface else { return false }
-    guard focused else { return false }
+    guard
+      Self.hasKeyEquivalentFocusOwnership(
+        cachedFocused: focused,
+        isActualFirstResponder: window?.firstResponder === self
+      )
+    else { return false }
 
     if UserCustomShortcutRegistry.shared.matches(event: event),
       let menu = NSApp.mainMenu,
+      Self.mainMenuHasMatchingItem(for: event, in: menu),
       menu.performKeyEquivalent(with: event)
     {
       return true
@@ -1132,6 +1226,7 @@ final class GhosttySurfaceView: NSView, Identifiable {
     if let bindingFlags = bindingFlags(for: event, surface: surface) {
       if shouldAttemptMenu(for: bindingFlags),
         let menu = NSApp.mainMenu,
+        Self.mainMenuHasMatchingItem(for: event, in: menu),
         menu.performKeyEquivalent(with: event)
       {
         return true
@@ -1361,6 +1456,84 @@ final class GhosttySurfaceView: NSView, Identifiable {
 
   @IBAction func changeTitle(_ sender: Any?) {
     performBindingAction("prompt_surface_title")
+  }
+
+  static func hasKeyEquivalentFocusOwnership(
+    cachedFocused: Bool,
+    isActualFirstResponder: Bool
+  ) -> Bool {
+    cachedFocused && isActualFirstResponder
+  }
+
+  static func mainMenuHasMatchingItem(for event: NSEvent, in menu: NSMenu) -> Bool {
+    let eventEquivalents = normalizedEventKeyEquivalents(for: event)
+    guard !eventEquivalents.isEmpty else { return false }
+
+    for item in menu.items {
+      if let submenu = item.submenu, mainMenuHasMatchingItem(for: event, in: submenu) {
+        return true
+      }
+
+      guard !item.keyEquivalent.isEmpty else { continue }
+      guard
+        let itemEquivalent = normalizedKeyEquivalent(
+          key: item.keyEquivalent,
+          modifiers: item.keyEquivalentModifierMask
+        )
+      else { continue }
+      if eventEquivalents.contains(where: { $0 == itemEquivalent }) {
+        return true
+      }
+    }
+
+    return false
+  }
+
+  private static let shortcutMask: NSEvent.ModifierFlags = [.shift, .control, .option, .command]
+
+  private static let shiftedKeyEquivalentBases: [Character: Character] = [
+    "~": "`", "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6", "&": "7",
+    "*": "8", "(": "9", ")": "0", "_": "-", "+": "=", "{": "[", "}": "]", "|": "\\",
+    ":": ";", "\"": "'", "<": ",", ">": ".", "?": "/",
+  ]
+
+  private struct KeyEquivalentSignature: Equatable {
+    var key: String
+    var modifiers: NSEvent.ModifierFlags
+  }
+
+  private static func normalizedEventKeyEquivalents(for event: NSEvent) -> [KeyEquivalentSignature] {
+    let eventModifiers = event.modifierFlags.intersection(shortcutMask)
+    return [event.charactersIgnoringModifiers, event.characters]
+      .compactMap { characters in
+        characters.flatMap { normalizedKeyEquivalent(key: $0, modifiers: eventModifiers) }
+      }
+      .reduce(into: []) { result, equivalent in
+        if !result.contains(equivalent) {
+          result.append(equivalent)
+        }
+      }
+  }
+
+  private static func normalizedKeyEquivalent(
+    key: String,
+    modifiers: NSEvent.ModifierFlags
+  ) -> KeyEquivalentSignature? {
+    guard !key.isEmpty else { return nil }
+
+    var normalizedKey = key.lowercased()
+    var normalizedModifiers = modifiers.intersection(shortcutMask)
+
+    if key.count == 1, let character = key.first {
+      if let base = shiftedKeyEquivalentBases[character] {
+        normalizedKey = String(base)
+        normalizedModifiers.insert(.shift)
+      } else if normalizedKey != key {
+        normalizedModifiers.insert(.shift)
+      }
+    }
+
+    return KeyEquivalentSignature(key: normalizedKey, modifiers: normalizedModifiers)
   }
 
   private func shouldAttemptMenu(for flags: ghostty_binding_flags_e) -> Bool {
@@ -2224,6 +2397,11 @@ extension GhosttySurfaceView: NSServicesMenuRequestor {
 }
 
 final class GhosttySurfaceScrollView: NSView {
+  enum HostKind: String {
+    case terminal
+    case canvas
+  }
+
   private struct ScrollbarState {
     let total: UInt64
     let offset: UInt64
@@ -2233,6 +2411,11 @@ final class GhosttySurfaceScrollView: NSView {
   private let scrollView: NSScrollView
   private let documentView: NSView
   private let surfaceView: GhosttySurfaceView
+  let hostKind: HostKind
+  private let debugID = String(UUID().uuidString.prefix(8))
+  var debugIdentifier: String {
+    debugID
+  }
   private var observers: [NSObjectProtocol] = []
 
   private var isLiveScrolling = false
@@ -2246,8 +2429,9 @@ final class GhosttySurfaceScrollView: NSView {
   /// terminal reflow.
   var pinnedSize: CGSize?
 
-  init(surfaceView: GhosttySurfaceView) {
+  init(surfaceView: GhosttySurfaceView, hostKind: HostKind) {
     self.surfaceView = surfaceView
+    self.hostKind = hostKind
     scrollView = NSScrollView()
     scrollView.hasHorizontalScroller = false
     scrollView.autohidesScrollers = false
@@ -2339,12 +2523,14 @@ final class GhosttySurfaceScrollView: NSView {
   override var mouseDownCanMoveWindow: Bool { false }
 
   isolated deinit {
-    observers.forEach { NotificationCenter.default.removeObserver($0) }
+    for observer in observers {
+      NotificationCenter.default.removeObserver(observer)
+    }
   }
 
   override func layout() {
     super.layout()
-    ensureSurfaceViewAttached()
+    ensureSurfaceAttached()
     let effectiveSize = pinnedSize ?? bounds.size
     scrollView.frame = CGRect(origin: .zero, size: effectiveSize)
     surfaceView.frame.size = effectiveSize
@@ -2354,29 +2540,43 @@ final class GhosttySurfaceScrollView: NSView {
     surfaceView.updateSurfaceSize()
   }
 
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    ensureSurfaceAttached()
+  }
+
   func updateSurfaceSize() {
     surfaceView.updateSurfaceSize()
     needsLayout = true
   }
 
-  func ensureSurfaceViewAttached() {
-    guard surfaceView.superview !== documentView || surfaceView.scrollWrapper !== self else { return }
-    guard shouldTakeSurfaceOwnership else { return }
-    if let currentOwner = surfaceView.scrollWrapper, currentOwner !== self, currentOwner.shouldKeepSurfaceOwnership {
-      return
+  var isSurfaceAttachedToDocumentView: Bool {
+    surfaceView.superview === documentView
+  }
+
+  func ensureSurfaceAttached(requiresLiveHost: Bool = true) {
+    guard hostKind == .terminal else { return }
+    if requiresLiveHost {
+      guard superview != nil || window != nil else { return }
     }
+    guard !isSurfaceAttachedToDocumentView else { return }
+    // Only adopt an orphaned surface; never steal it from a live host such as Canvas.
+    guard surfaceView.superview == nil else { return }
+    surfaceLogger.info(
+      "[CanvasExit] hostReattach wrapper=\(debugID) host=\(hostKind.rawValue) "
+        + "surface=\(surfaceView.debugIdentifierForLogging) "
+        + "currentSuperview=\(String(describing: surfaceView.superview)) "
+        + "wrapperWindow=\(window != nil)"
+    )
     documentView.addSubview(surfaceView)
     surfaceView.scrollWrapper = self
-  }
-
-  private var shouldTakeSurfaceOwnership: Bool {
-    guard let window else { return surfaceView.scrollWrapper == nil }
-    return window.isVisible && window.occlusionState.contains(.visible)
-  }
-
-  private var shouldKeepSurfaceOwnership: Bool {
-    guard let window else { return false }
-    return window.isVisible && window.occlusionState.contains(.visible)
+    surfaceLogger.info(
+      "[CanvasExit] hostReattachComplete wrapper=\(debugID) host=\(hostKind.rawValue) "
+        + "surface=\(surfaceView.debugIdentifierForLogging) "
+        + "superview=\(surfaceView.superview != nil) "
+        + "window=\(surfaceView.window != nil) "
+        + "bounds=\(Int(surfaceView.bounds.width))x\(Int(surfaceView.bounds.height))"
+    )
   }
 
   func updateScrollbar(total: UInt64, offset: UInt64, length: UInt64) {
@@ -2469,7 +2669,9 @@ final class GhosttySurfaceScrollView: NSView {
   }
 
   override func updateTrackingAreas() {
-    trackingAreas.forEach { removeTrackingArea($0) }
+    for trackingArea in trackingAreas {
+      removeTrackingArea(trackingArea)
+    }
     super.updateTrackingAreas()
     guard let scroller = scrollView.verticalScroller else { return }
     addTrackingArea(

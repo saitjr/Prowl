@@ -66,6 +66,28 @@ struct WorktreeTerminalManagerTests {
     #expect(state.onFontSizeAdjusted != nil)
   }
 
+  @Test func closeTargetAvailabilityFollowsTerminalModelState() {
+    let manager = WorktreeTerminalManager(runtime: GhosttyRuntime())
+    let worktree = makeWorktree()
+    let state = manager.state(for: worktree)
+
+    #expect(state.canCloseFocusedTab == false)
+    #expect(state.canCloseFocusedSurface == false)
+
+    let tabId = state.createTab()
+
+    #expect(tabId != nil)
+    #expect(state.canCloseFocusedTab == true)
+    #expect(state.canCloseFocusedSurface == true)
+
+    if let tabId {
+      state.closeTab(tabId)
+    }
+
+    #expect(state.canCloseFocusedTab == false)
+    #expect(state.canCloseFocusedSurface == false)
+  }
+
   @Test func notificationIndicatorUsesCurrentCountOnStreamStart() async {
     let manager = WorktreeTerminalManager(runtime: GhosttyRuntime())
     let worktree = makeWorktree()
@@ -77,7 +99,7 @@ struct WorktreeTerminalManagerTests {
         title: "Unread",
         body: "body",
         isRead: false
-      ),
+      )
     ]
     state.onNotificationIndicatorChanged?()
     state.notifications = [
@@ -86,7 +108,7 @@ struct WorktreeTerminalManagerTests {
         title: "Read",
         body: "body",
         isRead: true
-      ),
+      )
     ]
 
     let stream = manager.eventStream()
@@ -192,6 +214,99 @@ struct WorktreeTerminalManagerTests {
     #expect(manager.hasUnseenNotifications(for: worktree.id) == false)
   }
 
+  @Test func markNotificationReadOnlyAffectsMatchingID() {
+    let manager = WorktreeTerminalManager(runtime: GhosttyRuntime())
+    let worktree = makeWorktree()
+    let state = manager.state(for: worktree)
+    let notificationA = UUID()
+    let notificationB = UUID()
+    let surfaceID = UUID()
+
+    state.notifications = [
+      makeNotification(id: notificationA, surfaceId: surfaceID, isRead: false),
+      makeNotification(id: notificationB, surfaceId: surfaceID, isRead: false),
+    ]
+
+    state.markNotificationRead(id: notificationB)
+
+    #expect(state.notifications.map(\.isRead) == [false, true])
+    #expect(manager.hasUnseenNotifications(for: worktree.id) == true)
+  }
+
+  @Test func latestUnreadNotificationLocationChoosesNewestFocusableAcrossWorktrees() {
+    let manager = WorktreeTerminalManager(runtime: GhosttyRuntime())
+    let worktreeA = makeWorktree(id: "/tmp/repo/wt-a", name: "wt-a")
+    let worktreeB = makeWorktree(id: "/tmp/repo/wt-b", name: "wt-b")
+    let stateA = manager.state(for: worktreeA)
+    let stateB = manager.state(for: worktreeB)
+    let tabA = stateA.createTab()!
+    let tabB = stateB.createTab()!
+    let surfaceA = stateA.focusedSurfaceId(in: tabA)!
+    let surfaceB = stateB.focusedSurfaceId(in: tabB)!
+    let notificationA = UUID()
+    let notificationB = UUID()
+
+    stateA.notifications = [
+      makeNotification(
+        id: notificationA,
+        surfaceId: surfaceA,
+        createdAt: Date(timeIntervalSince1970: 10),
+        isRead: false
+      )
+    ]
+    stateB.notifications = [
+      makeNotification(
+        id: notificationB,
+        surfaceId: surfaceB,
+        createdAt: Date(timeIntervalSince1970: 20),
+        isRead: false
+      )
+    ]
+
+    #expect(
+      manager.latestUnreadNotificationLocation()
+        == NotificationLocation(
+          worktreeID: worktreeB.id,
+          tabID: tabB,
+          surfaceID: surfaceB,
+          notificationID: notificationB
+        )
+    )
+  }
+
+  @Test func latestUnreadNotificationLocationSkipsClosedSurfaces() {
+    let manager = WorktreeTerminalManager(runtime: GhosttyRuntime())
+    let worktree = makeWorktree()
+    let state = manager.state(for: worktree)
+    let tabID = state.createTab()!
+    let surfaceID = state.focusedSurfaceId(in: tabID)!
+    let focusableNotification = UUID()
+
+    state.notifications = [
+      makeNotification(
+        surfaceId: UUID(),
+        createdAt: Date(timeIntervalSince1970: 20),
+        isRead: false
+      ),
+      makeNotification(
+        id: focusableNotification,
+        surfaceId: surfaceID,
+        createdAt: Date(timeIntervalSince1970: 10),
+        isRead: false
+      ),
+    ]
+
+    #expect(
+      manager.latestUnreadNotificationLocation()
+        == NotificationLocation(
+          worktreeID: worktree.id,
+          tabID: tabID,
+          surfaceID: surfaceID,
+          notificationID: focusableNotification
+        )
+    )
+  }
+
   @Test func setNotificationsDisabledMarksAllRead() {
     let manager = WorktreeTerminalManager(runtime: GhosttyRuntime())
     let worktree = makeWorktree()
@@ -224,6 +339,49 @@ struct WorktreeTerminalManagerTests {
     #expect(manager.hasUnseenNotifications(for: worktree.id) == false)
   }
 
+  @Test func makeLayoutSnapshotPersistsCustomTabTitle() throws {
+    let manager = WorktreeTerminalManager(runtime: GhosttyRuntime())
+    let worktree = makeWorktree()
+    let state = manager.state(for: worktree)
+    let tabID = try #require(state.createTab())
+
+    state.tabManager.updateTitle(tabID, title: "npm test")
+    state.tabManager.setCustomTitle(tabID, title: "Build")
+
+    let snapshot = try #require(state.makeLayoutSnapshotWorktree())
+
+    #expect(snapshot.tabs.first?.title == "npm test")
+    #expect(snapshot.tabs.first?.customTitle == "Build")
+  }
+
+  @Test func applyLayoutSnapshotRestoresCustomTabTitle() throws {
+    let tabID = UUID()
+    let manager = WorktreeTerminalManager(runtime: GhosttyRuntime())
+    let worktree = makeWorktree()
+    let state = manager.state(for: worktree)
+    let snapshot = TerminalLayoutSnapshotPayload.SnapshotWorktree(
+      worktreeID: worktree.id,
+      selectedTabID: tabID.uuidString,
+      tabs: [
+        TerminalLayoutSnapshotPayload.SnapshotTab(
+          tabID: tabID.uuidString,
+          title: "npm test",
+          customTitle: "Build",
+          icon: nil,
+          splitRoot: .leaf(surfaceID: UUID().uuidString)
+        )
+      ]
+    )
+
+    #expect(state.applyLayoutSnapshot(snapshot))
+    let restored = try #require(state.tabManager.tabs.first)
+
+    #expect(restored.title == "npm test")
+    #expect(restored.customTitle == "Build")
+    #expect(restored.displayTitle == "Build")
+    #expect(restored.isTitleLocked == false)
+  }
+
   @Test func restoreLayoutSnapshotFailClosedClearsSnapshotWhenWorktreeMissing() async {
     let clearCount = LockIsolated(0)
     let snapshot = TerminalLayoutSnapshotPayload(
@@ -237,9 +395,9 @@ struct WorktreeTerminalManagerTests {
               title: nil,
               icon: nil,
               splitRoot: .leaf(surfaceID: "9B2F6D8C-44A4-42C5-8F9E-962108301901")
-            ),
+            )
           ]
-        ),
+        )
       ]
     )
     let manager = WorktreeTerminalManager(
@@ -292,12 +450,15 @@ struct WorktreeTerminalManagerTests {
     #expect(clearCount.value == 1)
   }
 
-  private func makeWorktree() -> Worktree {
+  private func makeWorktree(
+    id: Worktree.ID = "/tmp/repo/wt-1",
+    name: String = "wt-1"
+  ) -> Worktree {
     Worktree(
-      id: "/tmp/repo/wt-1",
-      name: "wt-1",
+      id: id,
+      name: name,
       detail: "detail",
-      workingDirectory: URL(fileURLWithPath: "/tmp/repo/wt-1"),
+      workingDirectory: URL(fileURLWithPath: id),
       repositoryRootURL: URL(fileURLWithPath: "/tmp/repo")
     )
   }
@@ -313,13 +474,17 @@ struct WorktreeTerminalManagerTests {
   }
 
   private func makeNotification(
+    id: UUID = UUID(),
     surfaceId: UUID = UUID(),
+    createdAt: Date = .distantPast,
     isRead: Bool
   ) -> WorktreeTerminalNotification {
     WorktreeTerminalNotification(
+      id: id,
       surfaceId: surfaceId,
       title: "Title",
       body: "Body",
+      createdAt: createdAt,
       isRead: isRead
     )
   }

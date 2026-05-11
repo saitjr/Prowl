@@ -21,7 +21,7 @@ struct KeybindingSchemaTests {
             key: "s",
             modifiers: KeybindingModifiers(command: true, control: true)
           )
-        ),
+        )
       ]
     )
 
@@ -51,6 +51,17 @@ struct KeybindingSchemaTests {
     #expect(renameBranch?.conflictPolicy == .localOnly)
     #expect(selectAllCanvasCards?.allowUserOverride == true)
     #expect(selectAllCanvasCards?.conflictPolicy == .localOnly)
+  }
+
+  @Test func worktreeHistoryShortcutsDoNotConflictWithShelfBookNavigation() {
+    #expect(AppShortcuts.worktreeHistoryBack != AppShortcuts.selectPreviousShelfBook)
+    #expect(AppShortcuts.worktreeHistoryForward != AppShortcuts.selectNextShelfBook)
+    #expect(AppShortcuts.worktreeHistoryBack != AppShortcuts.selectPreviousTerminalPane)
+    #expect(AppShortcuts.worktreeHistoryForward != AppShortcuts.selectNextTerminalPane)
+    #expect(AppShortcuts.worktreeHistoryBack != AppShortcuts.selectPreviousTerminalTab)
+    #expect(AppShortcuts.worktreeHistoryForward != AppShortcuts.selectNextTerminalTab)
+    #expect(AppShortcuts.worktreeHistoryBack.display == "⌘⌥[")
+    #expect(AppShortcuts.worktreeHistoryForward.display == "⌘⌥]")
   }
 
   @Test func resolverAppliesUserOverrideOverMigratedOverride() {
@@ -99,7 +110,7 @@ struct KeybindingSchemaTests {
     let migratedOverrides: [String: KeybindingUserOverride] = [
       "command.alpha": KeybindingUserOverride(
         binding: Keybinding(key: "m", modifiers: KeybindingModifiers(command: true))
-      ),
+      )
     ]
 
     let userOverrides = KeybindingUserOverrideStore(
@@ -207,7 +218,7 @@ struct KeybindingSchemaTests {
           allowUserOverride: true,
           conflictPolicy: .warnAndPreferUserOverride,
           defaultBinding: defaultBinding
-        ),
+        )
       ]
     )
     let overrides = KeybindingUserOverrideStore(

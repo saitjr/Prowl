@@ -6,6 +6,19 @@ import Observation
 import Sharing
 
 private let terminalStateLogger = SupaLogger("TerminalState")
+private let activeAgentDetectionInterval: Duration = .milliseconds(300)
+private let idleAgentDetectionInterval: Duration = .seconds(2)
+
+private struct AgentDetectionDiagnostic {
+  let tabId: TerminalTabID
+  let childPID: pid_t?
+  let processGroupID: pid_t?
+  let job: ForegroundJob?
+  let identified: (agent: DetectedAgent, name: String)?
+  let retainedAgent: DetectedAgent?
+  let raw: AgentRawState?
+  let stabilized: AgentRawState?
+}
 
 @MainActor
 @Observable
@@ -24,6 +37,12 @@ final class WorktreeTerminalState {
   private var surfaces: [UUID: GhosttySurfaceView] = [:]
   private var workingDirectoryAccessSessions: [String: RepositorySecurityScopedAccess.Session] = [:]
   private var focusedSurfaceIdByTab: [TerminalTabID: UUID] = [:]
+  private(set) var surfaceAgentStates: [UUID: PaneAgentState] = [:]
+  private var agentDetectionTasks: [UUID: Task<Void, Never>] = [:]
+  private var agentDetectionPresenceBySurface: [UUID: AgentDetectionPresence] = [:]
+  private var lastClaudeWorkingAtBySurface: [UUID: Date] = [:]
+  private var lastAgentDetectionDiagnosticsBySurface: [UUID: String] = [:]
+  private var agentDetectionEnabled = true
   var tabIsRunningById: [TerminalTabID: Bool] = [:]
   private var runScriptTabId: TerminalTabID?
   private var pendingSetupScript: Bool
@@ -33,31 +52,86 @@ final class WorktreeTerminalState {
   private var lastEmittedFocusSurfaceId: UUID?
   private var lastWindowIsKey: Bool?
   private var lastWindowIsVisible: Bool?
+  /// When `true`, Canvas owns occlusion management for this state's surfaces.
+  /// `syncFocusIfNeeded` skips `applySurfaceActivity` to avoid overriding
+  /// Canvas-set occlusion with stale normal-mode window activity values.
+  var isCanvasManaged = false
+  /// Tab whose icon picker should be presented. `nil` hides the picker.
+  var iconPickerTabId: TerminalTabID?
   var notifications: [WorktreeTerminalNotification] = []
   var notificationsEnabled = true
   private var commandFinishedNotificationEnabled = true
   private var commandFinishedNotificationThreshold = 10
   private var lastKeyInputTimeBySurface: [UUID: ContinuousClock.Instant] = [:]
   private var commandFinishedWaiters: [UUID: AsyncStream<(exitCode: Int?, durationMs: Int)>.Continuation] = [:]
+  /// Surfaces that should auto-close on the next `command_finished` event with exit code 0.
+  /// Populated by `markSurfaceForAutoClose` and consumed (one-shot) in `handleCommandFinished`.
+  private var autoCloseSurfaceIds: Set<UUID> = []
+  /// Surfaces running a tracked Custom Command. The stored name is surfaced as a success
+  /// toast when the command exits with code 0. One-shot: removed on the first finish event.
+  private var pendingCustomCommands: [UUID: String] = [:]
+  /// Per-surface set of titles known to be the shell's idle prompt
+  /// (the title `precmd` restores between commands). Populated by
+  /// observing the first title that arrives after each
+  /// `command_finished` — reliably the precmd-set prompt. Subsequent
+  /// occurrences are skipped so they can't clobber the icon set by a
+  /// real command.
+  private var learnedIdleTitlesBySurface: [UUID: Set<String>] = [:]
+  /// Surfaces whose next title-change should be added to
+  /// `learnedIdleTitlesBySurface`. Armed by `command_finished`,
+  /// consumed by the next title arrival.
+  private var awaitingIdleTitleLearningBySurface: Set<UUID> = []
   var hasUnseenNotification: Bool {
     notifications.contains { !$0.isRead }
+  }
+
+  func hasUnseenNotification(forSurfaceID surfaceID: UUID) -> Bool {
+    notifications.contains { !$0.isRead && $0.surfaceId == surfaceID }
   }
 
   func hasUnseenNotification(for tabId: TerminalTabID) -> Bool {
     let surfaceIds = trees[tabId]?.leaves().map(\.id) ?? []
     return notifications.contains { !$0.isRead && surfaceIds.contains($0.surfaceId) }
   }
+
+  func unreadNotifications() -> [WorktreeTerminalNotification] {
+    notifications.filter { !$0.isRead }.sorted { left, right in
+      if left.createdAt != right.createdAt {
+        return left.createdAt > right.createdAt
+      }
+      return left.id.uuidString > right.id.uuidString
+    }
+  }
+
+  var canCloseFocusedTab: Bool {
+    tabManager.selectedTabId != nil
+  }
+
+  var canCloseFocusedSurface: Bool {
+    guard let tabId = tabManager.selectedTabId,
+      let focusedId = focusedSurfaceIdByTab[tabId]
+    else {
+      return false
+    }
+    return surfaces[focusedId] != nil
+  }
+
   var isSelected: () -> Bool = { false }
-  var onNotificationReceived: ((String, String) -> Void)?
+  var onNotificationReceived: ((UUID, String, String) -> Void)?
   var onNotificationIndicatorChanged: (() -> Void)?
   var onTabCreated: (() -> Void)?
   var onTabClosed: (() -> Void)?
   var onFocusChanged: ((UUID) -> Void)?
   var onTaskStatusChanged: ((WorktreeTaskStatus) -> Void)?
+  var onAgentEntryChanged: ((ActiveAgentEntry) -> Void)?
+  var onAgentEntryRemoved: ((ActiveAgentEntry.ID) -> Void)?
   var onRunScriptStatusChanged: ((Bool) -> Void)?
   var onCommandPaletteToggle: (() -> Void)?
   var onSetupScriptConsumed: (() -> Void)?
   var onFontSizeAdjusted: (() -> Void)?
+  /// Emitted when a tracked Custom Command finishes with exit code 0.
+  /// Payload carries the user-facing command name and run duration in milliseconds.
+  var onCustomCommandSucceeded: ((String, Int) -> Void)?
 
   init(
     runtime: GhosttyRuntime,
@@ -87,6 +161,10 @@ final class WorktreeTerminalState {
       return nil
     }
     return surfaces[surfaceId]
+  }
+
+  var activeSurfaceID: UUID? {
+    currentFocusedSurfaceId()
   }
 
   func surfaceView(for tabId: TerminalTabID) -> GhosttySurfaceView? {
@@ -234,6 +312,12 @@ final class WorktreeTerminalState {
         workingDirectoryOverride: nil
       )
     )
+    if let tabId {
+      // Lock in the play glyph as a script-level override so OSC-2
+      // titles emitted by the script (e.g. `npm run dev`) can't swap
+      // the icon out from under it.
+      tabManager.setScriptIcon(tabId, icon: "play.fill")
+    }
     setRunScriptTabId(tabId)
     return tabId
   }
@@ -284,8 +368,10 @@ final class WorktreeTerminalState {
   }
 
   func focusSelectedTab() {
-    guard let tabId = tabManager.selectedTabId else { return }
-    focusSurface(in: tabId)
+    terminalStateLogger.interval("focusSelectedTab") {
+      guard let tabId = tabManager.selectedTabId else { return }
+      focusSurface(in: tabId)
+    }
   }
 
   @discardableResult
@@ -314,12 +400,20 @@ final class WorktreeTerminalState {
   }
 
   func syncFocus(windowIsKey: Bool, windowIsVisible: Bool) {
-    lastWindowIsKey = windowIsKey
-    lastWindowIsVisible = windowIsVisible
-    applySurfaceActivity()
+    terminalStateLogger.interval("syncFocus") {
+      lastWindowIsKey = windowIsKey
+      lastWindowIsVisible = windowIsVisible
+      applySurfaceActivity()
+    }
   }
 
   private func applySurfaceActivity() {
+    terminalStateLogger.interval("applySurfaceActivity") {
+      applySurfaceActivityImpl()
+    }
+  }
+
+  private func applySurfaceActivityImpl() {
     let selectedTabId = tabManager.selectedTabId
     var surfaceToFocus: GhosttySurfaceView?
     for (tabId, tree) in trees {
@@ -491,6 +585,95 @@ final class WorktreeTerminalState {
     return tree
   }
 
+  /// Splits the currently focused surface and seeds the new pane with `initialInput`.
+  /// Returns the new surface id, or nil if the split could not be created.
+  @discardableResult
+  func createSplitOnFocusedSurface(
+    direction: UserCustomSplitDirection,
+    initialInput: String
+  ) -> UUID? {
+    guard let tabId = tabManager.selectedTabId,
+      let parentSurfaceId = focusedSurfaceIdByTab[tabId],
+      let tree = trees[tabId],
+      let parentSurface = surfaces[parentSurfaceId]
+    else {
+      return nil
+    }
+    let newSurface = createSurface(
+      tabId: tabId,
+      initialInput: runScriptInput(initialInput),
+      inheritingFromSurfaceId: parentSurfaceId,
+      context: GHOSTTY_SURFACE_CONTEXT_SPLIT
+    )
+    do {
+      let newTree = try tree.inserting(
+        view: newSurface,
+        at: parentSurface,
+        direction: mapUserSplitDirection(direction)
+      )
+      updateTree(newTree, for: tabId)
+      if isCanvasManaged {
+        newSurface.setOcclusion(true)
+      }
+      focusSurface(newSurface, in: tabId)
+      return newSurface.id
+    } catch {
+      newSurface.closeSurface()
+      surfaces.removeValue(forKey: newSurface.id)
+      cleanupCommandDetectorState(forSurfaceId: newSurface.id)
+      cleanupAgentDetectionState(forSurfaceId: newSurface.id)
+      return nil
+    }
+  }
+
+  /// Returns the focused surface id for a given tab, if any.
+  func focusedSurfaceId(in tabId: TerminalTabID) -> UUID? {
+    focusedSurfaceIdByTab[tabId]
+  }
+
+  func activeSurfaceID(for tabId: TerminalTabID) -> UUID? {
+    focusedSurfaceIdByTab[tabId]
+  }
+
+  /// Marks a surface so that its next successful `command_finished` event (exit 0)
+  /// will trigger a one-shot close of that surface.
+  func markSurfaceForAutoClose(_ surfaceId: UUID) {
+    autoCloseSurfaceIds.insert(surfaceId)
+  }
+
+  func isMarkedForAutoClose(_ surfaceId: UUID) -> Bool {
+    autoCloseSurfaceIds.contains(surfaceId)
+  }
+
+  /// Records the user-facing Custom Command name associated with a freshly created surface,
+  /// so a success toast can be emitted when that surface's next command exits with code 0.
+  func markSurfaceForCustomCommand(_ surfaceId: UUID, name: String) {
+    pendingCustomCommands[surfaceId] = name
+  }
+
+  /// Pin a Custom Command's configured icon onto its host tab so the
+  /// auto-detector can't swap it out when the script's OSC-2 title
+  /// matches a known command. Yields to a user-set icon lock — manual
+  /// picker selections always win.
+  func applyCustomCommandIcon(_ icon: String, surfaceId: UUID) {
+    let trimmed = icon.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    guard let tabId = tabId(containing: surfaceId) else { return }
+    tabManager.setScriptIcon(tabId, icon: trimmed)
+  }
+
+  // Short delay lets the user see the final output before the pane disappears.
+  private static let autoCloseDelay: Duration = .milliseconds(800)
+
+  private func scheduleAutoClose(surfaceId: UUID) {
+    Task { [weak self] in
+      try? await Task.sleep(for: Self.autoCloseDelay)
+      guard let self else { return }
+      guard let view = self.surfaces[surfaceId] else { return }
+      self.handleCloseRequest(for: view, processAlive: false)
+    }
+  }
+
   func performSplitAction(_ action: GhosttySplitAction, for surfaceId: UUID) -> Bool {
     guard let tabId = tabId(containing: surfaceId), var tree = trees[tabId] else {
       return false
@@ -513,11 +696,17 @@ final class WorktreeTerminalState {
           direction: mapSplitDirection(direction)
         )
         updateTree(newTree, for: tabId)
+        // Canvas manages occlusion directly; ensure the new pane renders.
+        if isCanvasManaged {
+          newSurface.setOcclusion(true)
+        }
         focusSurface(newSurface, in: tabId)
         return true
       } catch {
         newSurface.closeSurface()
         surfaces.removeValue(forKey: newSurface.id)
+        cleanupCommandDetectorState(forSurfaceId: newSurface.id)
+        cleanupAgentDetectionState(forSurfaceId: newSurface.id)
 
         return false
       }
@@ -614,7 +803,10 @@ final class WorktreeTerminalState {
     surfaces.removeAll()
     trees.removeAll()
     focusedSurfaceIdByTab.removeAll()
+    cleanupAllAgentDetectionState()
     tabIsRunningById.removeAll()
+    autoCloseSurfaceIds.removeAll()
+    pendingCustomCommands.removeAll()
     setRunScriptTabId(nil)
     tabManager.closeAll()
   }
@@ -644,12 +836,16 @@ final class WorktreeTerminalState {
         return nil
       }
       // Skip title/icon for blocking-script tabs as they are transient.
+      // Persist the icon only when the user has explicitly overridden it; otherwise
+      // restore should pick up the current default ("terminal") or auto-detection.
       let isBlockingScriptTab = tab.id == runScriptTabId
+      let snapshotIcon: String? = (isBlockingScriptTab || tab.iconLock != .user) ? nil : tab.icon
       snapshotTabs.append(
         TerminalLayoutSnapshotPayload.SnapshotTab(
           tabID: tab.id.rawValue.uuidString,
           title: isBlockingScriptTab ? nil : tab.title,
-          icon: isBlockingScriptTab ? nil : tab.icon,
+          customTitle: isBlockingScriptTab ? nil : tab.customTitle,
+          icon: snapshotIcon,
           splitRoot: splitRoot
         )
       )
@@ -736,8 +932,10 @@ final class WorktreeTerminalState {
         TerminalTabItem(
           id: entry.tabID,
           title: entry.snapshotTab.title ?? "\(worktree.name) \(index + 1)",
+          customTitle: entry.snapshotTab.customTitle,
           icon: entry.snapshotTab.icon ?? "terminal",
-          isTitleLocked: entry.snapshotTab.title != nil
+          isTitleLocked: false,
+          iconLock: entry.snapshotTab.icon != nil ? .user : .auto
         )
       )
     }
@@ -759,6 +957,16 @@ final class WorktreeTerminalState {
       lastEmittedFocusSurfaceId = nil
     }
     emitTaskStatusIfChanged()
+    // Signal "this worktree now has tabs" so downstream Shelf
+    // bookkeeping (`markWorktreeOpened` via `terminalEvent(.tabCreated)`)
+    // adds the restored worktree to `openedWorktreeIDs`. Without this
+    // emit, only the active worktree (which goes through
+    // `.selectWorktree` on `.layoutRestored`) shows as a book on the
+    // Shelf — every other restored worktree is missing, even though
+    // the sidebar lists it and its terminal state is live.
+    if !restoredTabs.isEmpty {
+      onTabCreated?()
+    }
     terminalStateLogger.info(
       "[LayoutRestore] applySnapshot: success, restored \(restoredTabs.count) tab(s)"
         + " selectedTab=\(selectedTabID?.rawValue.uuidString ?? "nil")"
@@ -778,6 +986,20 @@ final class WorktreeTerminalState {
     commandFinishedNotificationThreshold = threshold
   }
 
+  func setAgentDetectionEnabled(_ enabled: Bool) {
+    guard agentDetectionEnabled != enabled else { return }
+    agentDetectionEnabled = enabled
+
+    if enabled {
+      for (surfaceID, view) in surfaces {
+        guard let tabId = tabId(containing: surfaceID) else { continue }
+        startAgentDetection(for: view, tabId: tabId)
+      }
+    } else {
+      cleanupAllAgentDetectionState()
+    }
+  }
+
   func clearNotificationIndicator() {
     markAllNotificationsRead()
   }
@@ -795,6 +1017,15 @@ final class WorktreeTerminalState {
     for index in notifications.indices where notifications[index].surfaceId == surfaceID {
       notifications[index].isRead = true
     }
+    emitNotificationIndicatorIfNeeded(previousHasUnseen: previousHasUnseen)
+  }
+
+  func markNotificationRead(id notificationID: WorktreeTerminalNotification.ID) {
+    let previousHasUnseen = hasUnseenNotification
+    guard let index = notifications.firstIndex(where: { $0.id == notificationID }) else {
+      return
+    }
+    notifications[index].isRead = true
     emitNotificationIndicatorIfNeeded(previousHasUnseen: previousHasUnseen)
   }
 
@@ -828,11 +1059,11 @@ final class WorktreeTerminalState {
     return formatCommandInput(script)
   }
 
+  // Env vars are injected into the surface's shell process via
+  // `GhosttySurfaceView(environment:)`, so scripts no longer need a shell
+  // export prefix.
   private func formatCommandInput(_ script: String) -> String? {
-    makeCommandInput(
-      script: script,
-      environmentExportPrefix: worktree.scriptEnvironmentExportPrefix
-    )
+    makeCommandInput(script: script)
   }
 
   private func runScriptInput(_ script: String) -> String? {
@@ -844,10 +1075,7 @@ final class WorktreeTerminalState {
   // Without this, the interactive shell stays alive after the script finishes
   // and GHOSTTY_ACTION_SHOW_CHILD_EXITED never fires for completion detection.
   private func blockingScriptInput(_ script: String) -> String? {
-    makeBlockingScriptInput(
-      script: script,
-      environmentExportPrefix: worktree.scriptEnvironmentExportPrefix
-    )
+    makeBlockingScriptInput(script: script)
   }
 
   private func setRunScriptTabId(_ tabId: TerminalTabID?) {
@@ -879,7 +1107,8 @@ final class WorktreeTerminalState {
       workingDirectory: accessibleWorkingDirectory,
       initialInput: initialInput,
       fontSize: resolvedFontSize,
-      context: context
+      context: context,
+      environment: worktree.scriptEnvironment
     )
     // Sending a no-op font size action marks the Ghostty surface as
     // "font_size_adjusted", which prevents config reloads (triggered by
@@ -891,6 +1120,7 @@ final class WorktreeTerminalState {
     configureBridgeCallbacks(for: view, tabId: tabId)
     configureSurfaceCallbacks(for: view, tabId: tabId)
     surfaces[view.id] = view
+    startAgentDetection(for: view, tabId: tabId)
     return view
   }
 
@@ -909,6 +1139,7 @@ final class WorktreeTerminalState {
       if self.focusedSurfaceIdByTab[tabId] == view.id {
         self.tabManager.updateTitle(tabId, title: title)
       }
+      self.noteTitleForCommandDetection(title, surfaceId: view.id, tabId: tabId)
     }
     view.bridge.onSplitAction = { [weak self, weak view] action in
       guard let self, let view else { return false }
@@ -957,10 +1188,7 @@ final class WorktreeTerminalState {
   private func configureSurfaceCallbacks(for view: GhosttySurfaceView, tabId: TerminalTabID) {
     view.onFocusChange = { [weak self, weak view] focused in
       guard let self, let view, focused else { return }
-      self.focusedSurfaceIdByTab[tabId] = view.id
-      self.markNotificationsRead(forSurfaceID: view.id)
-      self.updateTabTitle(for: tabId)
-      self.emitFocusChangedIfNeeded(view.id)
+      self.recordActiveSurface(view, in: tabId)
       self.emitTaskStatusIfChanged()
     }
     view.onKeyInput = { [weak self, weak view] in
@@ -1058,6 +1286,42 @@ final class WorktreeTerminalState {
     }
   }
 
+  func promptChangeTabTitle(_ tabId: TerminalTabID) {
+    let surfaceWindow = focusedSurfaceIdByTab[tabId].flatMap { surfaces[$0]?.window }
+    guard let window = surfaceWindow ?? NSApp.keyWindow else { return }
+    promptTabTitle(for: tabId, in: window)
+  }
+
+  func presentIconPicker(for tabId: TerminalTabID) {
+    guard tabManager.tabs.contains(where: { $0.id == tabId }) else { return }
+    iconPickerTabId = tabId
+  }
+
+  func presentIconPickerForFocusedTab() {
+    guard let tabId = tabManager.selectedTabId else { return }
+    presentIconPicker(for: tabId)
+  }
+
+  func dismissIconPicker() {
+    iconPickerTabId = nil
+  }
+
+  /// Default SF Symbol used for a tab when the user has not set an override.
+  func defaultIcon(for tabId: TerminalTabID) -> String {
+    tabId == runScriptTabId ? "play.fill" : "terminal"
+  }
+
+  /// Apply an icon change for `tabId`. Pass `nil` to clear the override and
+  /// restore the tab's default icon.
+  func applyIconChange(_ tabId: TerminalTabID, icon newIcon: String?) {
+    if let newIcon, !newIcon.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      tabManager.overrideIcon(tabId, icon: newIcon)
+    } else {
+      tabManager.clearIconOverride(tabId)
+      tabManager.updateIcon(tabId, icon: defaultIcon(for: tabId))
+    }
+  }
+
   private func promptTabTitle(for tabId: TerminalTabID, in window: NSWindow) {
     guard let tabIndex = tabManager.tabs.firstIndex(where: { $0.id == tabId }) else { return }
 
@@ -1067,7 +1331,7 @@ final class WorktreeTerminalState {
     alert.alertStyle = .informational
 
     let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
-    textField.stringValue = tabManager.tabs[tabIndex].title
+    textField.stringValue = tabManager.tabs[tabIndex].displayTitle
     alert.accessoryView = textField
 
     alert.addButton(withTitle: "OK")
@@ -1079,12 +1343,7 @@ final class WorktreeTerminalState {
         guard response == .alertFirstButtonReturn else { return }
         guard let self else { return }
         let newTitle = textField.stringValue
-        if newTitle.isEmpty {
-          self.tabManager.clearTitleOverride(tabId)
-          self.updateTabTitle(for: tabId)
-        } else {
-          self.tabManager.overrideTitle(tabId, title: newTitle)
-        }
+        self.tabManager.setCustomTitle(tabId, title: newTitle)
       }
     }
   }
@@ -1110,12 +1369,17 @@ final class WorktreeTerminalState {
 
   private func focusSurface(_ surface: GhosttySurfaceView, in tabId: TerminalTabID) {
     let previousSurface = focusedSurfaceIdByTab[tabId].flatMap { surfaces[$0] }
-    focusedSurfaceIdByTab[tabId] = surface.id
-    markNotificationsRead(forSurfaceID: surface.id)
-    updateTabTitle(for: tabId)
+    recordActiveSurface(surface, in: tabId)
     guard tabId == tabManager.selectedTabId else { return }
     let fromSurface = (previousSurface === surface) ? nil : previousSurface
     GhosttySurfaceView.moveFocus(to: surface, from: fromSurface)
+  }
+
+  private func recordActiveSurface(_ surface: GhosttySurfaceView, in tabId: TerminalTabID) {
+    focusedSurfaceIdByTab[tabId] = surface.id
+    markAgentSeen(surfaceID: surface.id)
+    markNotificationsRead(forSurfaceID: surface.id)
+    updateTabTitle(for: tabId)
     emitFocusChangedIfNeeded(surface.id)
   }
 
@@ -1131,13 +1395,14 @@ final class WorktreeTerminalState {
           surfaceId: surfaceId,
           title: trimmedTitle,
           body: trimmedBody,
+          createdAt: Date(),
           isRead: isRead
         ),
         at: 0
       )
       emitNotificationIndicatorIfNeeded(previousHasUnseen: previousHasUnseen)
     }
-    onNotificationReceived?(trimmedTitle, trimmedBody)
+    onNotificationReceived?(surfaceId, trimmedTitle, trimmedBody)
   }
 
   /// How recently the user must have typed for us to consider the exit user-initiated.
@@ -1255,6 +1520,22 @@ final class WorktreeTerminalState {
       continuation.finish()
     }
 
+    noteCommandFinishedForCommandDetection(surfaceId: surfaceId)
+
+    // Custom command success toast. One-shot: removed regardless of outcome.
+    if let commandName = pendingCustomCommands.removeValue(forKey: surfaceId), exitCode == 0 {
+      let durationMs = Int(durationNs / 1_000_000)
+      onCustomCommandSucceeded?(commandName, durationMs)
+    }
+
+    // Auto-close on success (exit 0). One-shot: the id is removed regardless of outcome.
+    if autoCloseSurfaceIds.remove(surfaceId) != nil {
+      if exitCode == 0, surfaces[surfaceId] != nil {
+        scheduleAutoClose(surfaceId: surfaceId)
+        return
+      }
+    }
+
     guard commandFinishedNotificationEnabled else { return }
     let durationSeconds = Int(durationNs / 1_000_000_000)
     guard durationSeconds >= commandFinishedNotificationThreshold else { return }
@@ -1278,6 +1559,310 @@ final class WorktreeTerminalState {
     appendNotification(title: title, body: body, surfaceId: surfaceId)
   }
 
+  // MARK: - Tab Icon Auto-Detection
+  //
+  // Strategy: each OSC 2 title change is matched against
+  // `CommandIconMap` (substring rules first, then first-token). A hit
+  // applies the icon immediately — no debounce. Rationale: the
+  // mapping is a curated allow-list, so a hit is by definition a
+  // command we're happy to brand the tab with; a miss leaves the
+  // existing icon untouched (selection-2 semantics).
+  //
+  // Idle-prompt suppression keeps the lookup focused on real
+  // commands: the first title after each `command_finished` is the
+  // shell's `precmd`-set prompt, and gets memorised into a learned-
+  // idle set so we never reach the mapping with a `user@host`-style
+  // string. Shape heuristics (`isLikelyIdleTitleByShape`) cover the
+  // bootstrap window before the learner has seen anything.
+  //
+  // The mapping-hit-equals-apply rule also unblocks short-lived
+  // commands (`git status`, `cd foo`) and TUIs that immediately
+  // overwrite their preexec title (`codex` → repo name) — both used
+  // to slip past a debounce-based detector.
+
+  func noteTitleForCommandDetection(_ rawTitle: String, surfaceId: UUID, tabId: TerminalTabID) {
+    let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !title.isEmpty else { return }
+    // Learn this surface's idle prompt: the first title after
+    // `command_finished` is reliably the precmd-set one.
+    if awaitingIdleTitleLearningBySurface.remove(surfaceId) != nil {
+      learnedIdleTitlesBySurface[surfaceId, default: []].insert(title)
+    }
+    // Drop idle prompts so they can't reach the mapping lookup.
+    if Self.isLikelyIdleTitleByShape(title) { return }
+    if learnedIdleTitlesBySurface[surfaceId]?.contains(title) == true { return }
+    guard let icon = CommandIconMap.iconForFirstToken(title) else { return }
+    applyResolvedIcon(icon, surfaceId: surfaceId, tabId: tabId)
+  }
+
+  func noteCommandFinishedForCommandDetection(surfaceId: UUID) {
+    // Arm the idle-prompt learner: the next title arrival is the
+    // precmd-set prompt and should join the learned-idle set.
+    awaitingIdleTitleLearningBySurface.insert(surfaceId)
+  }
+
+  /// Drop the per-surface detector state. Called when a surface is
+  /// closed or its parent tab is torn down so we don't retain
+  /// learned-idle sets keyed by ids that will never emit again.
+  func cleanupCommandDetectorState(forSurfaceId surfaceId: UUID) {
+    learnedIdleTitlesBySurface.removeValue(forKey: surfaceId)
+    awaitingIdleTitleLearningBySurface.remove(surfaceId)
+  }
+
+  private func startAgentDetection(for view: GhosttySurfaceView, tabId: TerminalTabID) {
+    guard agentDetectionEnabled else { return }
+    agentDetectionTasks[view.id]?.cancel()
+    surfaceAgentStates[view.id] = PaneAgentState(lastChangedAt: Date())
+    agentDetectionTasks[view.id] = Task { @MainActor [weak self, weak view] in
+      while !Task.isCancelled {
+        guard let self, let view, self.surfaces[view.id] != nil else { return }
+        await self.detectAgentState(for: view, tabId: tabId)
+        let hasAgent = self.surfaceAgentStates[view.id]?.detectedAgent != nil
+        try? await Task.sleep(for: hasAgent ? activeAgentDetectionInterval : idleAgentDetectionInterval)
+      }
+    }
+  }
+
+  private func detectAgentState(for view: GhosttySurfaceView, tabId: TerminalTabID) async {
+    let surfaceID = view.id
+    let childPID = view.bridge.childPID()
+    let processGroupID = view.bridge.foregroundProcessGroupID()
+    let job = await AgentProcessProbe.shared.foregroundJob(processGroupID: processGroupID, childPID: childPID)
+    guard surfaces[surfaceID] != nil else { return }
+
+    let identified = job.flatMap { identifyAgentInJob($0) }
+    let probedAgent = identified?.agent
+
+    var presence = agentDetectionPresenceBySurface[surfaceID] ?? AgentDetectionPresence()
+    let agent = presence.update(detectedAgent: probedAgent)
+    agentDetectionPresenceBySurface[surfaceID] = presence
+
+    guard let agent else {
+      // Only log the moment we lose a previously detected agent; pre-agent
+      // shells churn process lists every command and would otherwise spam.
+      if surfaceAgentStates[surfaceID]?.detectedAgent != nil {
+        logAgentDetectionDiagnostic(
+          surfaceID: surfaceID,
+          diagnostic: AgentDetectionDiagnostic(
+            tabId: tabId,
+            childPID: childPID,
+            processGroupID: processGroupID,
+            job: job,
+            identified: identified,
+            retainedAgent: nil,
+            raw: nil,
+            stabilized: nil
+          )
+        )
+      }
+      removeAgentEntryIfNeeded(surfaceID: surfaceID)
+      return
+    }
+
+    let now = Date()
+    let previous = surfaceAgentStates[surfaceID] ?? PaneAgentState(lastChangedAt: now)
+    let viewportText = view.bridge.readViewportText() ?? ""
+    let raw = await Task.detached(priority: .utility) {
+      agent.detectState(in: viewportText)
+    }.value
+    guard surfaces[surfaceID] != nil else { return }
+
+    var lastClaudeWorkingAt = lastClaudeWorkingAtBySurface[surfaceID]
+    let stabilized = stabilizeAgentState(
+      agent: agent,
+      previous: previous.state,
+      raw: raw,
+      now: now,
+      lastClaudeWorkingAt: &lastClaudeWorkingAt
+    )
+    lastClaudeWorkingAtBySurface[surfaceID] = lastClaudeWorkingAt
+
+    let isForeground = isSelected() && isFocusedSurface(surfaceID)
+    let becameIdleFromActive =
+      (previous.state == .working || previous.state == .blocked)
+      && stabilized == .idle
+    let seen: Bool
+    if isForeground || stabilized == .blocked {
+      seen = true
+    } else if becameIdleFromActive {
+      seen = false
+    } else {
+      seen = previous.seen
+    }
+    let lastChangedAt = (previous.detectedAgent != agent || previous.state != stabilized) ? now : previous.lastChangedAt
+    let next = PaneAgentState(
+      detectedAgent: agent,
+      fallbackState: raw,
+      state: stabilized,
+      seen: seen,
+      lastChangedAt: lastChangedAt
+    )
+    // Limit logging to meaningful transitions — agent identity or
+    // stabilized state changes. Raw oscillation and `seen` flips are
+    // routine and would otherwise dominate the log stream.
+    if previous.detectedAgent != agent || previous.state != stabilized {
+      logAgentDetectionDiagnostic(
+        surfaceID: surfaceID,
+        diagnostic: AgentDetectionDiagnostic(
+          tabId: tabId,
+          childPID: childPID,
+          processGroupID: processGroupID,
+          job: job,
+          identified: identified,
+          retainedAgent: agent,
+          raw: raw,
+          stabilized: stabilized
+        )
+      )
+    }
+    guard next != previous else { return }
+    surfaceAgentStates[surfaceID] = next
+    emitAgentEntry(surfaceID: surfaceID, tabId: tabId, state: next)
+  }
+
+  private func markAgentSeen(surfaceID: UUID) {
+    guard var state = surfaceAgentStates[surfaceID], !state.seen else { return }
+    state.seen = true
+    state.lastChangedAt = Date()
+    surfaceAgentStates[surfaceID] = state
+    guard let tabId = tabId(containing: surfaceID) else { return }
+    emitAgentEntry(surfaceID: surfaceID, tabId: tabId, state: state)
+  }
+
+  private func removeAgentEntryIfNeeded(surfaceID: UUID) {
+    guard surfaceAgentStates[surfaceID]?.detectedAgent != nil else { return }
+    surfaceAgentStates[surfaceID] = PaneAgentState(lastChangedAt: Date())
+    lastClaudeWorkingAtBySurface.removeValue(forKey: surfaceID)
+    onAgentEntryRemoved?(surfaceID)
+  }
+
+  private func emitAgentEntry(surfaceID: UUID, tabId: TerminalTabID, state: PaneAgentState) {
+    guard let entry = activeAgentEntry(surfaceID: surfaceID, tabId: tabId, state: state) else {
+      onAgentEntryRemoved?(surfaceID)
+      return
+    }
+    onAgentEntryChanged?(entry)
+  }
+
+  private func activeAgentEntry(surfaceID: UUID, tabId: TerminalTabID, state: PaneAgentState) -> ActiveAgentEntry? {
+    guard let agent = state.detectedAgent, state.state != .unknown else { return nil }
+    let paneIDs = trees[tabId]?.leaves().map(\.id) ?? []
+    let paneIndex = paneIDs.firstIndex(of: surfaceID).map { $0 + 1 } ?? 1
+    let tabTitle = tabManager.tabs.first(where: { $0.id == tabId })?.displayTitle ?? "?"
+    return ActiveAgentEntry(
+      id: surfaceID,
+      worktreeID: worktree.id,
+      worktreeName: worktree.name,
+      tabID: tabId,
+      tabTitle: tabTitle,
+      surfaceID: surfaceID,
+      paneIndex: paneIndex,
+      agent: agent,
+      rawState: state.fallbackState,
+      displayState: state.displayState,
+      lastChangedAt: state.lastChangedAt
+    )
+  }
+
+  private func cleanupAgentDetectionState(forSurfaceId surfaceId: UUID) {
+    agentDetectionTasks[surfaceId]?.cancel()
+    agentDetectionTasks.removeValue(forKey: surfaceId)
+    surfaceAgentStates.removeValue(forKey: surfaceId)
+    agentDetectionPresenceBySurface.removeValue(forKey: surfaceId)
+    lastClaudeWorkingAtBySurface.removeValue(forKey: surfaceId)
+    lastAgentDetectionDiagnosticsBySurface.removeValue(forKey: surfaceId)
+    onAgentEntryRemoved?(surfaceId)
+  }
+
+  private func cleanupAllAgentDetectionState() {
+    for task in agentDetectionTasks.values {
+      task.cancel()
+    }
+    let removedIDs = Array(surfaceAgentStates.keys)
+    agentDetectionTasks.removeAll()
+    surfaceAgentStates.removeAll()
+    agentDetectionPresenceBySurface.removeAll()
+    lastClaudeWorkingAtBySurface.removeAll()
+    lastAgentDetectionDiagnosticsBySurface.removeAll()
+    for id in removedIDs {
+      onAgentEntryRemoved?(id)
+    }
+  }
+
+  private func agentDetectionDiagnosticMessage(_ diagnostic: AgentDetectionDiagnostic) -> String {
+    let processSummary =
+      diagnostic.job?.processes
+      .map { "\($0.pid):\($0.argv0 ?? $0.name)" }
+      .joined(separator: ",") ?? "none"
+    return [
+      "tab=\(diagnostic.tabId.rawValue.uuidString.prefix(8))",
+      "childPID=\(diagnostic.childPID.map(String.init) ?? "nil")",
+      "ptyPGID=\(diagnostic.processGroupID.map(String.init) ?? "nil")",
+      "fgPGID=\(diagnostic.job.map { String($0.processGroupID) } ?? "nil")",
+      "processes=\(processSummary)",
+      "identified=\(diagnostic.identified.map { "\($0.agent.rawValue)(\($0.name))" } ?? "nil")",
+      "retained=\(diagnostic.retainedAgent?.rawValue ?? "nil")",
+      "raw=\(diagnostic.raw?.rawValue ?? "nil")",
+      "state=\(diagnostic.stabilized?.rawValue ?? "nil")",
+    ].joined(separator: " ")
+  }
+
+  private func logAgentDetectionDiagnostic(surfaceID: UUID, diagnostic: AgentDetectionDiagnostic) {
+    #if DEBUG
+      let message = agentDetectionDiagnosticMessage(diagnostic)
+      guard lastAgentDetectionDiagnosticsBySurface[surfaceID] != message else { return }
+      lastAgentDetectionDiagnosticsBySurface[surfaceID] = message
+      terminalStateLogger.debug(
+        "agent detection worktree=\(worktree.name) surface=\(surfaceID.uuidString.prefix(8)) \(message)"
+      )
+    #endif
+  }
+
+  /// Heuristic shape-only detection for shell idle prompts. The
+  /// bootstrap filter — before `awaitingIdleTitleLearning` has caught
+  /// the precmd-set prompt at least once on this surface — for two
+  /// common forms:
+  ///   1. `user@host[:path]` — contains `@` plus `:` or `/`, no spaces.
+  ///   2. Pure path — starts with `~`, `/`, or `…`, no spaces.
+  /// Real commands typically contain a space (program + args) or a
+  /// short single token (`ls`, `claude`, `vim`) that doesn't match
+  /// either shape, so the false-negative risk is small.
+  ///
+  /// Exposed (`internal static`) for direct unit testing — does not
+  /// touch instance state.
+  static func isLikelyIdleTitleByShape(_ title: String) -> Bool {
+    guard !title.contains(" ") else { return false }
+    if title.contains("@"), title.contains(":") || title.contains("/") {
+      return true
+    }
+    if title.hasPrefix("~") || title.hasPrefix("/") || title.hasPrefix("…") {
+      return true
+    }
+    return false
+  }
+
+  /// Apply an already-resolved icon to the tab. Honours focus, the user
+  /// icon lock, and the Run Script / Custom Command override; encodes
+  /// the icon through `storageString` so `assetName`-bearing entries
+  /// pick up the `@asset:` marker the renderers parse via
+  /// `ResolvedTabIcon`.
+  private func applyResolvedIcon(
+    _ icon: TabIconSource,
+    surfaceId: UUID,
+    tabId: TerminalTabID
+  ) {
+    // Per-tab UI is single-headed: only the focused surface in a
+    // multi-split tab gets to drive its tab's icon. Stops a
+    // background split's command from silently overriding what the
+    // user is currently looking at.
+    guard focusedSurfaceIdByTab[tabId] == surfaceId else { return }
+    guard let tab = tabManager.tabs.first(where: { $0.id == tabId }) else { return }
+    guard tab.iconLock == .auto else { return }
+    let serialised = icon.storageString
+    guard tab.icon != serialised else { return }
+    tabManager.updateIcon(tabId, icon: serialised)
+  }
+
   static func formatDuration(_ seconds: Int) -> String {
     if seconds < 60 {
       return "\(seconds)s"
@@ -1297,16 +1882,24 @@ final class WorktreeTerminalState {
     for surface in tree.leaves() {
       surface.closeSurface()
       surfaces.removeValue(forKey: surface.id)
+      autoCloseSurfaceIds.remove(surface.id)
+      pendingCustomCommands.removeValue(forKey: surface.id)
+      cleanupCommandDetectorState(forSurfaceId: surface.id)
+      cleanupAgentDetectionState(forSurfaceId: surface.id)
     }
     focusedSurfaceIdByTab.removeValue(forKey: tabId)
     tabIsRunningById.removeValue(forKey: tabId)
   }
 
-  private func tabId(containing surfaceId: UUID) -> TerminalTabID? {
+  func tabID(containing surfaceId: UUID) -> TerminalTabID? {
     for (tabId, tree) in trees where tree.find(id: surfaceId) != nil {
       return tabId
     }
     return nil
+  }
+
+  private func tabId(containing surfaceId: UUID) -> TerminalTabID? {
+    tabID(containing: surfaceId)
   }
 
   private func isFocusedSurface(_ surfaceId: UUID) -> Bool {
@@ -1347,6 +1940,7 @@ final class WorktreeTerminalState {
   }
 
   private func syncFocusIfNeeded() {
+    guard !isCanvasManaged else { return }
     guard lastWindowIsKey != nil, lastWindowIsVisible != nil else { return }
     applySurfaceActivity()
   }
@@ -1369,6 +1963,21 @@ final class WorktreeTerminalState {
   }
 
   private func mapSplitDirection(_ direction: GhosttySplitAction.NewDirection)
+    -> SplitTree<GhosttySurfaceView>.NewDirection
+  {
+    switch direction {
+    case .left:
+      return .left
+    case .right:
+      return .right
+    case .top:
+      return .top
+    case .down:
+      return .down
+    }
+  }
+
+  private func mapUserSplitDirection(_ direction: UserCustomSplitDirection)
     -> SplitTree<GhosttySurfaceView>.NewDirection
   {
     switch direction {
@@ -1422,11 +2031,19 @@ final class WorktreeTerminalState {
     guard let tabId = tabId(containing: view.id), let tree = trees[tabId] else {
       view.closeSurface()
       surfaces.removeValue(forKey: view.id)
+      autoCloseSurfaceIds.remove(view.id)
+      pendingCustomCommands.removeValue(forKey: view.id)
+      cleanupCommandDetectorState(forSurfaceId: view.id)
+      cleanupAgentDetectionState(forSurfaceId: view.id)
       return
     }
     guard let node = tree.find(id: view.id) else {
       view.closeSurface()
       surfaces.removeValue(forKey: view.id)
+      autoCloseSurfaceIds.remove(view.id)
+      pendingCustomCommands.removeValue(forKey: view.id)
+      cleanupCommandDetectorState(forSurfaceId: view.id)
+      cleanupAgentDetectionState(forSurfaceId: view.id)
       return
     }
     let nextSurface =
@@ -1436,6 +2053,10 @@ final class WorktreeTerminalState {
     let newTree = tree.removing(node)
     view.closeSurface()
     surfaces.removeValue(forKey: view.id)
+    autoCloseSurfaceIds.remove(view.id)
+    pendingCustomCommands.removeValue(forKey: view.id)
+    cleanupCommandDetectorState(forSurfaceId: view.id)
+    cleanupAgentDetectionState(forSurfaceId: view.id)
     if newTree.isEmpty {
       trees.removeValue(forKey: tabId)
       focusedSurfaceIdByTab.removeValue(forKey: tabId)
@@ -1443,6 +2064,12 @@ final class WorktreeTerminalState {
       if tabId == runScriptTabId {
         setRunScriptTabId(nil)
       }
+      // Mirror `state.closeTab(_:)`'s `onTabClosed` emit: this path
+      // fires when the shell process exits (ghostty-driven close)
+      // and historically skipped the callback, which meant the
+      // Shelf's "retire the book when its last tab closes" logic
+      // never saw this very common path.
+      onTabClosed?()
       return
     }
     updateTree(newTree, for: tabId)
@@ -1543,13 +2170,13 @@ extension WorktreeTerminalState {
           context: GHOSTTY_SURFACE_CONTEXT_TAB
         ).workingDirectory?.path(percentEncoded: false)
 
-        let title = paneTitle(surfaceID: paneID, fallbackTabTitle: tab.title)
+        let title = paneTitle(surfaceID: paneID, fallbackTabTitle: tab.displayTitle)
         return CLITerminalPaneSnapshot(id: paneID, title: title, cwd: cwd)
       }
 
       return CLITerminalTabSnapshot(
         id: tab.id.rawValue,
-        title: tab.title,
+        title: tab.displayTitle,
         selected: tab.id == selectedTabID,
         focusedPaneID: focusedSurfaceIdByTab[tab.id],
         panes: panes
@@ -1629,26 +2256,13 @@ extension WorktreeTerminalState {
   }
 }
 
-nonisolated func makeCommandInput(
-  script: String,
-  environmentExportPrefix: String
-) -> String? {
+nonisolated func makeCommandInput(script: String) -> String? {
   let trimmed = script.trimmingCharacters(in: .whitespacesAndNewlines)
   guard !trimmed.isEmpty else { return nil }
-  return environmentExportPrefix + trimmed + "\n"
+  return trimmed + "\n"
 }
 
-nonisolated func makeBlockingScriptInput(
-  script: String,
-  environmentExportPrefix: String
-) -> String? {
-  guard
-    let input = makeCommandInput(
-      script: script,
-      environmentExportPrefix: environmentExportPrefix
-    )
-  else {
-    return nil
-  }
+nonisolated func makeBlockingScriptInput(script: String) -> String? {
+  guard let input = makeCommandInput(script: script) else { return nil }
   return input + "exit\n"
 }

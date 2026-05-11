@@ -20,8 +20,8 @@ struct WorktreeCommands: Commands {
     let repositories = store.repositories
     let hasActiveWorktree = repositories.worktree(for: repositories.selectedWorktreeID) != nil
     let orderedRows = visibleHotkeyWorktreeRows ?? repositories.orderedWorktreeRows()
-    let pullRequestURL = selectedPullRequestURL
-    let githubIntegrationEnabled = store.settings.githubIntegrationEnabled
+    let codeHostWorktreeID = selectedCodeHostWorktreeID
+    let codeHostLabel = "Open on \(repositories.codeHost(forWorktreeID: codeHostWorktreeID).displayName)"
     let deleteShortcut = KeyboardShortcut(.delete, modifiers: [.command, .shift]).display
     let customCommands = store.selectedCustomCommands
     CommandMenu("Worktrees") {
@@ -41,10 +41,32 @@ struct WorktreeCommands: Commands {
       )
       .help(helpText(title: "Select Previous Worktree", commandID: AppShortcuts.CommandID.selectPreviousWorktree))
       .disabled(orderedRows.isEmpty)
+      Button("Back in Worktree History") {
+        store.send(.repositories(.worktreeHistoryBack))
+      }
+      .modifier(
+        KeyboardShortcutModifier(shortcut: keyboardShortcut(for: AppShortcuts.CommandID.worktreeHistoryBack))
+      )
+      .help(helpText(title: "Back in Worktree History", commandID: AppShortcuts.CommandID.worktreeHistoryBack))
+      .disabled(!repositories.canNavigateWorktreeHistoryBackward)
+      Button("Forward in Worktree History") {
+        store.send(.repositories(.worktreeHistoryForward))
+      }
+      .modifier(
+        KeyboardShortcutModifier(shortcut: keyboardShortcut(for: AppShortcuts.CommandID.worktreeHistoryForward))
+      )
+      .help(helpText(title: "Forward in Worktree History", commandID: AppShortcuts.CommandID.worktreeHistoryForward))
+      .disabled(!repositories.canNavigateWorktreeHistoryForward)
       Divider()
       ForEach(worktreeMenuEntries(orderedRows: orderedRows)) { entry in
         worktreeMenuButton(entry: entry)
       }
+      Divider()
+      Button("Archived Worktrees") {
+        store.send(.repositories(.selectArchivedWorktrees))
+      }
+      .modifier(KeyboardShortcutModifier(shortcut: keyboardShortcut(for: AppShortcuts.CommandID.archivedWorktrees)))
+      .help(helpText(title: "Archived Worktrees", commandID: AppShortcuts.CommandID.archivedWorktrees))
     }
     CommandGroup(replacing: .newItem) {
       if !customCommands.isEmpty {
@@ -68,25 +90,20 @@ struct WorktreeCommands: Commands {
       .modifier(KeyboardShortcutModifier(shortcut: keyboardShortcut(for: AppShortcuts.CommandID.openWorktree)))
       .help(helpText(title: "Open Worktree", commandID: AppShortcuts.CommandID.openWorktree))
       .disabled(openSelectedWorktreeAction == nil)
-      Button("Open Pull Request on GitHub") {
-        if let pullRequestURL {
-          NSWorkspace.shared.open(pullRequestURL)
+      Button(codeHostLabel) {
+        if let codeHostWorktreeID {
+          store.send(.repositories(.githubIntegration(.pullRequestAction(codeHostWorktreeID, .openOnCodeHost))))
         }
       }
       .modifier(KeyboardShortcutModifier(shortcut: keyboardShortcut(for: AppShortcuts.CommandID.openPullRequest)))
-      .help(helpText(title: "Open Pull Request on GitHub", commandID: AppShortcuts.CommandID.openPullRequest))
-      .disabled(pullRequestURL == nil || !githubIntegrationEnabled)
+      .help(helpText(title: codeHostLabel, commandID: AppShortcuts.CommandID.openPullRequest))
+      .disabled(codeHostWorktreeID == nil)
       Button("New Worktree", systemImage: "plus") {
         store.send(.repositories(.worktreeCreation(.createRandomWorktree)))
       }
       .modifier(KeyboardShortcutModifier(shortcut: keyboardShortcut(for: AppShortcuts.CommandID.newWorktree)))
       .help(helpText(title: "New Worktree", commandID: AppShortcuts.CommandID.newWorktree))
       .disabled(!repositories.canCreateWorktree)
-      Button("Archived Worktrees") {
-        store.send(.repositories(.selectArchivedWorktrees))
-      }
-      .modifier(KeyboardShortcutModifier(shortcut: keyboardShortcut(for: AppShortcuts.CommandID.archivedWorktrees)))
-      .help(helpText(title: "Archived Worktrees", commandID: AppShortcuts.CommandID.archivedWorktrees))
       Button("Archive Worktree") {
         archiveWorktreeAction?()
       }
@@ -109,6 +126,12 @@ struct WorktreeCommands: Commands {
       }
       .modifier(KeyboardShortcutModifier(shortcut: keyboardShortcut(for: AppShortcuts.CommandID.refreshWorktrees)))
       .help(helpText(title: "Refresh Worktrees", commandID: AppShortcuts.CommandID.refreshWorktrees))
+      Button("Jump to Latest Unread") {
+        store.send(.jumpToLatestUnread)
+      }
+      .modifier(KeyboardShortcutModifier(shortcut: keyboardShortcut(for: AppShortcuts.CommandID.jumpToLatestUnread)))
+      .help(helpText(title: "Jump to Latest Unread", commandID: AppShortcuts.CommandID.jumpToLatestUnread))
+      .disabled(store.notificationIndicatorCount == 0)
       Divider()
       Button("Run Script") {
         runScriptAction?()
@@ -129,11 +152,16 @@ struct WorktreeCommands: Commands {
     AppShortcuts.worktreeSelectionCommandIDs
   }
 
-  private var selectedPullRequestURL: URL? {
+  private var selectedCodeHostWorktreeID: Worktree.ID? {
     let repositories = store.repositories
     guard let selectedWorktreeID = repositories.selectedWorktreeID else { return nil }
-    let pullRequest = repositories.worktreeInfoByID[selectedWorktreeID]?.pullRequest
-    return pullRequest.flatMap { URL(string: $0.url) }
+    guard
+      let repositoryID = repositories.repositoryID(containing: selectedWorktreeID),
+      repositories.repositories[id: repositoryID]?.capabilities.supportsCodeHost == true
+    else {
+      return nil
+    }
+    return selectedWorktreeID
   }
 
   private func keyboardShortcut(for commandID: String) -> KeyboardShortcut? {
@@ -177,16 +205,18 @@ struct WorktreeCommands: Commands {
     for repoID in repositories.orderedRepositoryIDs() {
       guard let repo = reposByID[repoID] else { continue }
       if repo.kind == .plain {
-        entries.append(WorktreeMenuEntry(
-          kind: .plainFolder(id: repo.id, name: repo.name),
-          shortcutCommandID: nil
-        ))
+        entries.append(
+          WorktreeMenuEntry(
+            kind: .plainFolder(id: repo.id, name: repo.name),
+            shortcutCommandID: nil
+          ))
       } else {
         for row in repositories.worktreeRows(in: repo) {
-          entries.append(WorktreeMenuEntry(
-            kind: .worktree(row),
-            shortcutCommandID: shortcutByWorktreeID[row.id]
-          ))
+          entries.append(
+            WorktreeMenuEntry(
+              kind: .worktree(row),
+              shortcutCommandID: shortcutByWorktreeID[row.id]
+            ))
         }
       }
     }
@@ -202,15 +232,18 @@ struct WorktreeCommands: Commands {
       Button(title) {
         store.send(.repositories(.selectWorktree(row.id)))
       }
-      .modifier(KeyboardShortcutModifier(
-        shortcut: entry.shortcutCommandID.flatMap { keyboardShortcut(for: $0) }
-      ))
-      .help({
-        if let commandID = entry.shortcutCommandID, let shortcut = shortcutDisplay(for: commandID) {
-          return "Switch to \(title) (\(shortcut))"
-        }
-        return "Switch to \(title)"
-      }())
+      .modifier(
+        KeyboardShortcutModifier(
+          shortcut: entry.shortcutCommandID.flatMap { keyboardShortcut(for: $0) }
+        )
+      )
+      .help(
+        {
+          if let commandID = entry.shortcutCommandID, let shortcut = shortcutDisplay(for: commandID) {
+            return "Switch to \(title) (\(shortcut))"
+          }
+          return "Switch to \(title)"
+        }())
     case .plainFolder(let repoID, let name):
       Button(name) {
         store.send(.repositories(.selectRepository(repoID)))

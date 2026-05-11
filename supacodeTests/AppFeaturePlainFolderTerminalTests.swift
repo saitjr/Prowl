@@ -35,7 +35,7 @@ struct AppFeaturePlainFolderTerminalTests {
           command: "pnpm test --watch",
           execution: .terminalInput,
           shortcut: nil
-        ),
+        )
       ]
     )
     try localStorage.save(
@@ -65,6 +65,7 @@ struct AppFeaturePlainFolderTerminalTests {
 
     await store.send(.repositories(.selectRepository(repository.id))) {
       $0.repositories.selection = .repository(repository.id)
+      $0.repositories.openedWorktreeIDs = [repository.id]
     }
     await store.receive(\.repositories.delegate.selectedWorktreeChanged)
     await store.receive(\.worktreeSettingsLoaded) {
@@ -115,7 +116,7 @@ struct AppFeaturePlainFolderTerminalTests {
         .createTab(
           makePlainTerminalTarget(repository: repository),
           runSetupScriptIfNew: false
-        ),
+        )
       ]
     )
   }
@@ -153,7 +154,7 @@ struct AppFeaturePlainFolderTerminalTests {
             key: "y",
             modifiers: UserCustomShortcutModifiers(command: true, shift: true)
           )
-        ),
+        )
       ]
     )
 
@@ -192,7 +193,7 @@ struct AppFeaturePlainFolderTerminalTests {
         command: "pnpm test --watch",
         execution: .terminalInput,
         shortcut: nil
-      ),
+      )
     ]
     let store = TestStore(initialState: state) {
       AppFeature()
@@ -210,7 +211,7 @@ struct AppFeaturePlainFolderTerminalTests {
         .insertText(
           makePlainTerminalTarget(repository: repository),
           text: "pnpm test --watch"
-        ),
+        )
       ]
     )
   }

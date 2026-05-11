@@ -15,17 +15,27 @@ GHOSTTY_TERMINFO_PATH := $(CURRENT_MAKEFILE_DIR)/Resources/terminfo
 GHOSTTY_BUILD_OUTPUTS := $(GHOSTTY_XCFRAMEWORK_PATH) $(GHOSTTY_RESOURCE_PATH) $(GHOSTTY_TERMINFO_PATH)
 GHOSTTY_BUILD_STAMP := $(CURRENT_MAKEFILE_DIR)/.ghostty_build_stamp
 GHOSTTY_HASH_FILE := $(CURRENT_MAKEFILE_DIR)/.ghostty_hash
-SPM_CACHE_DIR := /tmp/supacode-spm-cache/SourcePackages
+SPM_CACHE_DIR := $(HOME)/Library/Caches/supacode-spm-cache/SourcePackages
 DEBUG_DERIVED_DATA_DIR := $(CURRENT_MAKEFILE_DIR)/build/DerivedData/Debug
 TEST_DERIVED_DATA_DIR := $(CURRENT_MAKEFILE_DIR)/build/DerivedData/Test
 VERSION ?=
 BUILD ?=
 XCODEBUILD_FLAGS ?=
+FORMAT_BASE_REF ?= origin/main
+
+# Release-only analytics/crash credentials. Included from Config/Secrets.env if present,
+# or overridable from the environment (e.g. CI). Debug builds skip SDK init regardless.
+-include Config/Secrets.env
+PROWL_SENTRY_DSN ?=
+PROWL_POSTHOG_API_KEY ?=
+PROWL_POSTHOG_HOST ?=
+
+# Tooling wrappers. (Requires mise.)
 MISE_ZIG = mise exec zig@0.15.2 --
 MISE_XCSIFT = mise exec github:ldomaradzki/xcsift@1.1.3 --
 MISE_SWIFTLINT = mise exec swiftlint@0.62.2 --
 .DEFAULT_GOAL := help
-.PHONY: build-ghostty-xcframework ensure-ghostty sync-ghostty _check-ghostty-hash _record-ghostty-hash build-app build-cli build-cli-release embed-cli-debug embed-cli run-app install-dev-build install-release archive export-archive format lint check test test-cli-smoke test-cli-integration bump-version bump-and-release log-stream
+.PHONY: build-ghostty-xcframework ensure-ghostty sync-ghostty _check-ghostty-hash _record-ghostty-hash build-app build-cli build-cli-release embed-cli-debug embed-cli run-app install-dev-build install-release archive export-archive format format-changed format-lint lint check test test-cli-smoke test-cli-integration bump-version bump-and-release log-stream
 
 help:  # Display this help.
 	@-+echo "Run make with one of the following targets:"
@@ -267,7 +277,7 @@ install-release: build-ghostty-xcframework # Build Release, sign locally, instal
 	echo "installed $$DST (Release build, locally signed)"
 
 archive: build-ghostty-xcframework embed-cli # Archive Release build for distribution
-	bash -o pipefail -c 'xcodebuild -project supacode.xcodeproj -scheme supacode -configuration Release -archivePath build/supacode.xcarchive archive CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="$$APPLE_TEAM_ID" CODE_SIGN_IDENTITY="$$DEVELOPER_ID_IDENTITY_SHA" OTHER_CODE_SIGN_FLAGS="--timestamp" -skipMacroValidation -clonedSourcePackagesDirPath $(SPM_CACHE_DIR) $(XCODEBUILD_FLAGS) 2>&1 | $(MISE_XCSIFT) xcsift -qw --format toon'
+	bash -o pipefail -c 'xcodebuild -project supacode.xcodeproj -scheme supacode -configuration Release -archivePath build/supacode.xcarchive archive CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="$$APPLE_TEAM_ID" CODE_SIGN_IDENTITY="$$DEVELOPER_ID_IDENTITY_SHA" OTHER_CODE_SIGN_FLAGS="--timestamp" PROWL_SENTRY_DSN="$(PROWL_SENTRY_DSN)" PROWL_POSTHOG_API_KEY="$(PROWL_POSTHOG_API_KEY)" PROWL_POSTHOG_HOST="$(PROWL_POSTHOG_HOST)" -skipMacroValidation -clonedSourcePackagesDirPath $(SPM_CACHE_DIR) $(XCODEBUILD_FLAGS) 2>&1 | $(MISE_XCSIFT) xcsift -qw --format toon'
 
 export-archive: # Export xarchive
 	bash -o pipefail -c 'xcodebuild -exportArchive -archivePath build/supacode.xcarchive -exportPath build/export -exportOptionsPlist build/ExportOptions.plist 2>&1 | $(MISE_XCSIFT) xcsift -qw --format toon'
@@ -300,14 +310,32 @@ test-cli-smoke: build-cli # Smoke test CLI executable
 test-cli-integration: # Run CLI integration tests via SwiftPM
 	swift test --filter ProwlCLIIntegrationTests
 
-format: # Format code with swift-format (local only)
+format: # Format all Swift code with swift-format (full-tree cleanup)
 	swift-format -p --in-place --recursive --configuration ./.swift-format.json supacode supacodeTests
+
+format-changed: # Format Swift files changed from FORMAT_BASE_REF (default: origin/main)
+	@base="$$(git merge-base HEAD "$(FORMAT_BASE_REF)" 2>/dev/null || git rev-parse HEAD)"; \
+	mapfile -t files < <( \
+		{ \
+			git diff --name-only --diff-filter=ACMR "$$base" -- supacode supacodeTests; \
+			git ls-files --others --exclude-standard -- supacode supacodeTests; \
+		} | awk '/\.swift$$/' | sort -u \
+	); \
+	if [ "$${#files[@]}" -eq 0 ]; then \
+		echo "No changed Swift files to format."; \
+	else \
+		printf 'Formatting %s changed Swift file(s) from %s\n' "$${#files[@]}" "$$base"; \
+		swift-format -p --in-place --configuration ./.swift-format.json "$${files[@]}"; \
+	fi
+
+format-lint: # Check Swift formatting without rewriting files
+	swift-format lint --strict --recursive --configuration ./.swift-format.json supacode supacodeTests
 
 lint: # Lint code with swiftlint
 	$(MISE_SWIFTLINT) swiftlint --fix --quiet
 	$(MISE_SWIFTLINT) swiftlint lint --quiet --config .swiftlint.yml
 
-check: format lint # Format and lint
+check: format-changed format-lint lint # Format changed Swift files, then run swift-format lint and SwiftLint
 
 log-stream: # Stream logs from the app via log stream
 	log stream --predicate 'subsystem == "com.onevcat.prowl"' --style compact --color always

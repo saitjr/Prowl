@@ -63,9 +63,30 @@ struct RepositorySettingsView: View {
       get: { settings.worktreeBaseDirectoryPath.wrappedValue ?? "" },
       set: { settings.worktreeBaseDirectoryPath.wrappedValue = $0 },
     )
+    let customTitle = Binding(
+      get: { settings.customTitle.wrappedValue ?? "" },
+      set: { settings.customTitle.wrappedValue = $0 },
+    )
     let exampleWorktreePath = store.exampleWorktreePath
+    let folderName = Repository.name(for: store.rootURL)
 
     Form {
+      Section("Display") {
+        VStack(alignment: .leading, spacing: 12) {
+          HStack {
+            Text("Name")
+            Spacer().frame(width: 20)
+            TextField("", text: customTitle, prompt: Text(folderName))
+              .frame(width: 300)
+              .textFieldStyle(.roundedBorder)
+              .labelsHidden()
+          }
+          Divider()
+          RepositoryAppearancePickerView(store: store)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+      }
+
       if store.showsWorktreeSettings {
         Section {
           if store.isBranchDataLoaded {
@@ -125,16 +146,30 @@ struct RepositorySettingsView: View {
           }
           .frame(maxWidth: .infinity, alignment: .leading)
 
-          Toggle(
-            "Copy ignored files to new worktrees",
-            isOn: settings.copyIgnoredOnWorktreeCreate
-          )
+          Picker(selection: settings.copyIgnoredOnWorktreeCreate) {
+            Text(
+              "Global \(Text(store.globalCopyIgnoredOnWorktreeCreate ? "Yes" : "No").foregroundStyle(.secondary))"
+            )
+            .tag(Bool?.none)
+            Text("Yes").tag(Bool?.some(true))
+            Text("No").tag(Bool?.some(false))
+          } label: {
+            Text("Copy ignored files to new worktrees")
+            Text("Copies gitignored files from the main worktree.")
+          }
           .disabled(store.isBareRepository)
 
-          Toggle(
-            "Copy untracked files to new worktrees",
-            isOn: settings.copyUntrackedOnWorktreeCreate
-          )
+          Picker(selection: settings.copyUntrackedOnWorktreeCreate) {
+            Text(
+              "Global \(Text(store.globalCopyUntrackedOnWorktreeCreate ? "Yes" : "No").foregroundStyle(.secondary))"
+            )
+            .tag(Bool?.none)
+            Text("Yes").tag(Bool?.some(true))
+            Text("No").tag(Bool?.some(false))
+          } label: {
+            Text("Copy untracked files to new worktrees")
+            Text("Copies untracked files from the main worktree.")
+          }
           .disabled(store.isBareRepository)
 
           if store.isBareRepository {
@@ -152,16 +187,18 @@ struct RepositorySettingsView: View {
 
       if store.showsPullRequestSettings {
         Section {
-          Picker(
-            "Merge strategy",
-            selection: settings.pullRequestMergeStrategy
-          ) {
+          Picker(selection: settings.pullRequestMergeStrategy) {
+            Text(
+              "Global \(Text(store.globalPullRequestMergeStrategy.title).foregroundStyle(.secondary))"
+            )
+            .tag(PullRequestMergeStrategy?.none)
             ForEach(PullRequestMergeStrategy.allCases) { strategy in
-              Text(strategy.title)
-                .tag(strategy)
+              Text(strategy.title).tag(PullRequestMergeStrategy?.some(strategy))
             }
+          } label: {
+            Text("Merge strategy")
+            Text("Used when merging PRs from the command palette.")
           }
-          .labelsHidden()
         } header: {
           VStack(alignment: .leading, spacing: 4) {
             Text("Pull Requests")
@@ -633,6 +670,8 @@ struct RepositorySettingsView: View {
       return "New Tab"
     case .terminalInput:
       return "In Place"
+    case .split:
+      return "New Split"
     }
   }
 
@@ -698,14 +737,27 @@ struct RepositorySettingsView: View {
       Text("Choose where this command runs and edit the script used by this repository custom command.")
         .font(.caption)
         .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
 
       Picker("Execution", selection: command.execution) {
         Text("New Tab")
           .tag(UserCustomCommandExecution.shellScript)
         Text("In Place")
           .tag(UserCustomCommandExecution.terminalInput)
+        Text("New Split")
+          .tag(UserCustomCommandExecution.split)
       }
       .pickerStyle(.segmented)
+
+      if command.wrappedValue.execution == .split {
+        Picker("Split Direction", selection: command.splitDirection) {
+          ForEach(UserCustomSplitDirection.allCases) { direction in
+            Text(direction.title).tag(direction)
+          }
+        }
+        .pickerStyle(.menu)
+        .help("Direction to split the focused terminal pane.")
+      }
 
       PlainTextEditor(
         text: command.command,
@@ -718,6 +770,13 @@ struct RepositorySettingsView: View {
       Text(scriptDescription(for: command.wrappedValue.execution))
         .font(.caption)
         .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+
+      if command.wrappedValue.execution.supportsCloseOnSuccess {
+        Toggle("Close on success", isOn: command.closeOnSuccess)
+          .help("Automatically closes the tab or split when the command exits with code 0.")
+          .toggleStyle(.checkbox)
+      }
     }
     .padding(12)
     .frame(width: 420)
@@ -837,6 +896,8 @@ struct RepositorySettingsView: View {
       return "npm test && swift test"
     case .terminalInput:
       return "pnpm test --watch"
+    case .split:
+      return "tail -f logs/app.log"
     }
   }
 
@@ -846,6 +907,8 @@ struct RepositorySettingsView: View {
       return "Runs in a new terminal tab."
     case .terminalInput:
       return "Sends input to the currently focused terminal."
+    case .split:
+      return "Runs in a new split of the focused terminal."
     }
   }
 
@@ -886,6 +949,8 @@ struct RepositorySettingsView: View {
           command.systemImage = updatedCommand.systemImage
           command.command = updatedCommand.command
           command.execution = updatedCommand.execution
+          command.splitDirection = updatedCommand.splitDirection
+          command.closeOnSuccess = updatedCommand.closeOnSuccess
           command.shortcut = updatedCommand.shortcut
         }
       }

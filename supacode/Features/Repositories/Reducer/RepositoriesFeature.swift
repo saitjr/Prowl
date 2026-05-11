@@ -9,6 +9,8 @@ nonisolated let githubIntegrationRecoveryInterval: Duration = .seconds(15)
 nonisolated let worktreeCreationProgressLineLimit = 200
 nonisolated let worktreeCreationProgressUpdateStride = 20
 nonisolated let archiveScriptProgressLineLimit = 200
+private let secondsPerDay: Double = 86_400
+private let repositoriesLogger = SupaLogger("RepositoriesFeature")
 
 nonisolated struct WorktreeCreationProgressUpdateThrottle {
   private let stride: Int
@@ -43,6 +45,11 @@ nonisolated struct WorktreeCreationProgressUpdateThrottle {
   }
 }
 
+struct PendingSidebarReveal: Equatable, Sendable {
+  let id: Int
+  let worktreeID: Worktree.ID
+}
+
 @Reducer
 struct RepositoriesFeature {
   enum CancelID {
@@ -69,12 +76,13 @@ struct RepositoriesFeature {
     case createWorktreeInRepository(
       repositoryID: Repository.ID,
       nameSource: WorktreeCreationNameSource,
-      baseRefSource: WorktreeCreationBaseRefSource
+      baseRefSource: WorktreeCreationBaseRefSource,
+      fetchRemote: Bool
     )
     case promptedWorktreeCreationDataLoaded(
       repositoryID: Repository.ID,
       baseRefOptions: [String],
-      automaticBaseRefLabel: String,
+      automaticBaseRef: String,
       selectedBaseRef: String?
     )
     case startPromptedWorktreeCreation(
@@ -86,6 +94,7 @@ struct RepositoriesFeature {
       repositoryID: Repository.ID,
       branchName: String,
       baseRef: String?,
+      fetchRemote: Bool,
       duplicateMessage: String?
     )
     case pendingWorktreeProgressUpdated(id: Worktree.ID, progress: WorktreeCreationProgress)
@@ -137,6 +146,7 @@ struct RepositoriesFeature {
     case pinWorktree(Worktree.ID)
     case unpinWorktree(Worktree.ID)
     case worktreeNotificationReceived(Worktree.ID)
+    case setSidebarDragActive(Bool)
     case setMoveNotifiedWorktreeToTop(Bool)
   }
 
@@ -152,7 +162,7 @@ struct RepositoriesFeature {
       pullRequestsByWorktreeID: [Worktree.ID: GithubPullRequest?]
     )
     case setGithubIntegrationEnabled(Bool)
-    case setAutomaticallyArchiveMergedWorktrees(Bool)
+    case setMergedWorktreeAction(MergedWorktreeAction?)
     case pullRequestAction(Worktree.ID, PullRequestAction)
   }
 
@@ -178,6 +188,13 @@ struct RepositoriesFeature {
     var repositoryRoots: [URL] = []
     var repositoryOrderIDs: [Repository.ID] = []
     var loadFailuresByID: [Repository.ID: String] = [:]
+    /// User-defined display titles indexed by `Repository.ID`. Resolved
+    /// once on repo discovery (and refreshed when settings change) so
+    /// hot-path display sites — sidebar, shelf spine, canvas card,
+    /// toolbar notifications, settings list — read a plain dictionary
+    /// instead of subscribing to `@Shared(.repositorySettings(...))`
+    /// per row per frame. Absent entries fall back to `repository.name`.
+    var repositoryCustomTitles: [Repository.ID: String] = [:]
     var selection: SidebarSelection?
     var worktreeInfoByID: [Worktree.ID: WorktreeInfoEntry] = [:]
     var worktreeOrderByRepository: [Repository.ID: [Worktree.ID]] = [:]
@@ -191,12 +208,22 @@ struct RepositoriesFeature {
     var deletingWorktreeIDs: Set<Worktree.ID> = []
     var removingRepositoryIDs: Set<Repository.ID> = []
     var pinnedWorktreeIDs: [Worktree.ID] = []
-    var archivedWorktreeIDs: [Worktree.ID] = []
-    var automaticallyArchiveMergedWorktrees = false
+    var archivedWorktrees: [ArchivedWorktree] = []
+    var archivedAutoDeletePeriod: AutoDeletePeriod?
+    var mergedWorktreeAction: MergedWorktreeAction?
     var moveNotifiedWorktreeToTop = true
     var lastFocusedWorktreeID: Worktree.ID?
     var preCanvasWorktreeID: Worktree.ID?
     var preCanvasTerminalTargetID: Worktree.ID?
+    var isShelfActive: Bool = false
+    var worktreeHistoryBackStack: [Worktree.ID] = []
+    var worktreeHistoryForwardStack: [Worktree.ID] = []
+    /// IDs of worktrees (and plain-folder repositories) that have been
+    /// "opened" at least once in this session — i.e., had their
+    /// terminal state created by a user selection or CLI activation.
+    /// The Shelf's book list is derived from this set so a sidebar
+    /// worktree that's never been touched does not appear as a spine.
+    var openedWorktreeIDs: Set<Worktree.ID> = []
     var launchRestoreMode: LaunchRestoreMode = .lastFocusedWorktree
     var shouldRestoreLastFocusedWorktree = false
     var shouldSelectFirstAfterReload = false
@@ -207,7 +234,13 @@ struct RepositoriesFeature {
     var pendingPullRequestRefreshByRepositoryID: [Repository.ID: PendingPullRequestRefresh] = [:]
     var inFlightPullRequestRefreshRepositoryIDs: Set<Repository.ID> = []
     var queuedPullRequestRefreshByRepositoryID: [Repository.ID: PendingPullRequestRefresh] = [:]
+    var codeHostByRepositoryID: [Repository.ID: CodeHost] = [:]
     var sidebarSelectedWorktreeIDs: Set<Worktree.ID> = []
+    var nextPendingSidebarRevealID = 0
+    var pendingSidebarReveal: PendingSidebarReveal?
+    var isSidebarDragActive = false
+    var pendingSidebarNotifyReorderIDs: [Worktree.ID] = []
+    var activeAgents = ActiveAgentsFeature.State()
     @Shared(.appStorage("sidebarCollapsedRepositoryIDs")) var collapsedRepositoryIDs: [Repository.ID] = []
     @Presents var worktreeCreationPrompt: WorktreeCreationPromptFeature.State?
     @Presents var alert: AlertState<Alert>?
@@ -242,26 +275,44 @@ struct RepositoriesFeature {
     case worktreeOrdering(WorktreeOrderingAction)
     case githubIntegration(GithubIntegrationAction)
     case repositoryManagement(RepositoryManagementAction)
+    case activeAgents(ActiveAgentsFeature.Action)
     case task
     case repositorySnapshotLoaded([Repository]?)
     case setOpenPanelPresented(Bool)
     case loadPersistedRepositories
     case pinnedWorktreeIDsLoaded([Worktree.ID])
-    case archivedWorktreeIDsLoaded([Worktree.ID])
+    case archivedWorktreesLoaded([ArchivedWorktree])
+    case setArchivedAutoDeletePeriod(AutoDeletePeriod?)
+    case autoDeleteExpiredArchivedWorktrees
     case repositoryOrderIDsLoaded([Repository.ID])
     case worktreeOrderByRepositoryLoaded([Repository.ID: [Worktree.ID]])
     case lastFocusedWorktreeIDLoaded(Worktree.ID?)
     case refreshWorktrees
     case reloadRepositories(animated: Bool)
     case repositoriesLoaded([Repository], failures: [LoadFailure], roots: [URL], animated: Bool)
+    case refreshAllCustomTitles
+    case refreshCustomTitle(URL)
+    case customTitlesLoaded([Repository.ID: String])
+    case customTitleUpdated(Repository.ID, String?)
+    case codeHostsDetected([Repository.ID: CodeHost])
     case selectArchivedWorktrees
     case selectCanvas
     case toggleCanvas
+    case toggleShelf
+    case selectNextShelfBook
+    case selectPreviousShelfBook
+    case selectShelfBook(Int)
+    case markWorktreeOpened(Worktree.ID)
+    case markWorktreeClosed(Worktree.ID)
     case setSidebarSelectedWorktreeIDs(Set<Worktree.ID>)
     case selectRepository(Repository.ID?)
-    case selectWorktree(Worktree.ID?, focusTerminal: Bool = false)
+    case selectWorktree(Worktree.ID?, focusTerminal: Bool = false, recordHistory: Bool = true)
     case selectNextWorktree
     case selectPreviousWorktree
+    case worktreeHistoryBack
+    case worktreeHistoryForward
+    case revealSelectedWorktreeInSidebar
+    case consumePendingSidebarReveal(Int)
     case requestRenameBranch(Worktree.ID, String)
     case presentAlert(title: String, message: String)
     case worktreeInfoEvent(WorktreeInfoWatcherClient.Event)
@@ -293,7 +344,7 @@ struct RepositoriesFeature {
     let didPrunePinned: Bool
     let didPruneRepositoryOrder: Bool
     let didPruneWorktreeOrder: Bool
-    let didPruneArchivedWorktreeIDs: Bool
+    let didPruneArchivedWorktrees: Bool
   }
 
   enum StatusToast: Equatable {
@@ -317,7 +368,7 @@ struct RepositoriesFeature {
   }
 
   enum PullRequestAction: Equatable {
-    case openOnGithub
+    case openOnCodeHost
     case markReadyForReview
     case merge
     case close
@@ -341,8 +392,10 @@ struct RepositoriesFeature {
   @Dependency(GithubCLIClient.self) var githubCLI
   @Dependency(GithubIntegrationClient.self) var githubIntegration
   @Dependency(RepositoryBookmarkClient.self) var repositoryBookmarkClient
+  @Dependency(OpenURLClient.self) var openURLClient
   @Dependency(RepositoryPersistenceClient.self) var repositoryPersistence
   @Dependency(ShellClient.self) var shellClient
+  @Dependency(\.date.now) var now
   @Dependency(\.uuid) var uuid
 
   var body: some Reducer<State, Action> {
@@ -352,18 +405,30 @@ struct RepositoriesFeature {
         case .worktreeCreation, .worktreeLifecycle, .worktreeOrdering, .githubIntegration, .repositoryManagement:
           return .none
 
+        case .activeAgents(.entryTapped(let id)):
+          guard let entry = state.activeAgents.entries[id: id] else { return .none }
+          return .merge(
+            .send(.selectWorktree(entry.worktreeID, focusTerminal: false)),
+            .run { _ in
+              _ = await terminalClient.focusSurface(entry.worktreeID, entry.surfaceID)
+            }
+          )
+
+        case .activeAgents:
+          return .none
+
         case .task:
           state.snapshotPersistencePhase = .restoring
           return .run { send in
             let pinned = await repositoryPersistence.loadPinnedWorktreeIDs()
-            let archived = await repositoryPersistence.loadArchivedWorktreeIDs()
+            let archived = await repositoryPersistence.loadArchivedWorktrees()
             let lastFocused = await repositoryPersistence.loadLastFocusedWorktreeID()
             let repositoryOrderIDs = await repositoryPersistence.loadRepositoryOrderIDs()
             let worktreeOrderByRepository =
               await repositoryPersistence.loadWorktreeOrderByRepository()
             let repositorySnapshot = await repositoryPersistence.loadRepositorySnapshot()
             await send(.pinnedWorktreeIDsLoaded(pinned))
-            await send(.archivedWorktreeIDsLoaded(archived))
+            await send(.archivedWorktreesLoaded(archived))
             await send(.repositoryOrderIDsLoaded(repositoryOrderIDs))
             await send(.worktreeOrderByRepositoryLoaded(worktreeOrderByRepository))
             await send(.lastFocusedWorktreeIDLoaded(lastFocused))
@@ -384,7 +449,7 @@ struct RepositoriesFeature {
           _ = applyRepositories(
             repositories,
             roots: roots,
-            shouldPruneArchivedWorktreeIDs: true,
+            shouldPruneArchivedWorktrees: true,
             state: &state,
             animated: false
           )
@@ -405,15 +470,67 @@ struct RepositoriesFeature {
           if selectionChanged {
             allEffects.append(.send(.delegate(.selectedWorktreeChanged(selectedWorktree))))
           }
+          // Apply "Default View = Shelf" preference once the initial
+          // repository snapshot has landed — reuses `.toggleShelf`'s
+          // guards (needs ≥1 book, falls back to `lastFocusedWorktreeID`
+          // when no selection is set yet). `repositorySnapshotLoaded`
+          // is only sent from `.task` at launch, so this won't re-enter
+          // Shelf if the user has already exited to Normal in the same
+          // session. When Layout Restore is about to run, defer to the
+          // `.layoutRestored` event in AppFeature — otherwise Layout
+          // Restore clears the selection we just set, and any books not
+          // in the saved layout would linger as stray spines.
+          @Shared(.settingsFile) var settingsFile
+          if settingsFile.global.defaultViewMode == .shelf,
+            state.launchRestoreMode != .restoreLayout,
+            !state.isShelfActive
+          {
+            allEffects.append(.send(.toggleShelf))
+          }
           return .merge(allEffects)
 
         case .pinnedWorktreeIDsLoaded(let pinnedWorktreeIDs):
           state.pinnedWorktreeIDs = pinnedWorktreeIDs
           return .none
 
-        case .archivedWorktreeIDsLoaded(let archivedWorktreeIDs):
-          state.archivedWorktreeIDs = archivedWorktreeIDs
+        case .archivedWorktreesLoaded(let archivedWorktrees):
+          state.archivedWorktrees = archivedWorktrees
           return .none
+
+        case .setArchivedAutoDeletePeriod(let period):
+          state.archivedAutoDeletePeriod = period
+          guard period != nil else { return .none }
+          return .send(.autoDeleteExpiredArchivedWorktrees)
+
+        case .autoDeleteExpiredArchivedWorktrees:
+          guard let period = state.archivedAutoDeletePeriod else {
+            return .none
+          }
+          let cutoff = now.addingTimeInterval(-Double(period.rawValue) * secondsPerDay)
+          let expiredEntries = state.archivedWorktrees.filter { $0.archivedAt <= cutoff }
+          guard !expiredEntries.isEmpty else {
+            return .none
+          }
+          var deleteEffects: [Effect<Action>] = []
+          for entry in expiredEntries {
+            guard
+              let (worktree, repository) = findWorktreeAndRepository(
+                worktreeID: entry.id,
+                state: state
+              ),
+              !state.isMainWorktree(worktree),
+              !state.deletingWorktreeIDs.contains(entry.id)
+            else {
+              continue
+            }
+            deleteEffects.append(
+              .send(.worktreeLifecycle(.deleteWorktreeConfirmed(worktree.id, repository.id)))
+            )
+          }
+          guard !deleteEffects.isEmpty else {
+            return .none
+          }
+          return .merge(deleteEffects)
 
         case .repositoryOrderIDsLoaded(let repositoryOrderIDs):
           state.repositoryOrderIDs = repositoryOrderIDs
@@ -478,7 +595,7 @@ struct RepositoriesFeature {
           let applyResult = applyRepositories(
             repositories,
             roots: roots,
-            shouldPruneArchivedWorktreeIDs: failures.isEmpty,
+            shouldPruneArchivedWorktrees: failures.isEmpty,
             state: &state,
             animated: animated
           )
@@ -522,11 +639,11 @@ struct RepositoriesFeature {
                 await repositoryPersistence.saveWorktreeOrderByRepository(worktreeOrderByRepository)
               })
           }
-          if applyResult.didPruneArchivedWorktreeIDs {
-            let archivedWorktreeIDs = state.archivedWorktreeIDs
+          if applyResult.didPruneArchivedWorktrees {
+            let archivedWorktrees = state.archivedWorktrees
             allEffects.append(
               .run { _ in
-                await repositoryPersistence.saveArchivedWorktreeIDs(archivedWorktreeIDs)
+                await repositoryPersistence.saveArchivedWorktrees(archivedWorktrees)
               }
             )
           }
@@ -538,9 +655,74 @@ struct RepositoriesFeature {
               }
             )
           }
+          if state.archivedAutoDeletePeriod != nil {
+            allEffects.append(.send(.autoDeleteExpiredArchivedWorktrees))
+          }
+          if repositoriesChanged,
+            let effect = detectCodeHostsEffect(for: state.repositories)
+          {
+            allEffects.append(effect)
+          }
           return .merge(allEffects)
 
+        case .refreshAllCustomTitles:
+          // Fan out across the current repository list, reading each
+          // per-repo settings file via `@Shared`. Runs in a reducer
+          // effect (not in a view body), so even when the first cache
+          // miss triggers a `settingsFile` write the resulting view
+          // re-render can't loop back into this action.
+          let repositoriesForTitleRefresh = Array(state.repositories)
+          return .run { send in
+            var dict: [Repository.ID: String] = [:]
+            for repository in repositoriesForTitleRefresh {
+              @Shared(.repositorySettings(repository.rootURL)) var settings
+              let trimmed = settings.customTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+              if let trimmed, !trimmed.isEmpty {
+                dict[repository.id] = trimmed
+              }
+            }
+            await send(.customTitlesLoaded(dict))
+          }
+
+        case .refreshCustomTitle(let rootURL):
+          guard let repository = state.repositories.first(where: { $0.rootURL == rootURL }) else {
+            return .none
+          }
+          let repositoryID = repository.id
+          return .run { send in
+            @Shared(.repositorySettings(rootURL)) var settings
+            let trimmed = settings.customTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalized = (trimmed?.isEmpty ?? true) ? nil : trimmed
+            await send(.customTitleUpdated(repositoryID, normalized))
+          }
+
+        case .customTitlesLoaded(let dict):
+          guard state.repositoryCustomTitles != dict else { return .none }
+          state.repositoryCustomTitles = dict
+          return .none
+
+        case .customTitleUpdated(let id, let title):
+          if let title {
+            guard state.repositoryCustomTitles[id] != title else { return .none }
+            state.repositoryCustomTitles[id] = title
+          } else {
+            guard state.repositoryCustomTitles[id] != nil else { return .none }
+            state.repositoryCustomTitles.removeValue(forKey: id)
+          }
+          return .none
+
+        case .codeHostsDetected(let codeHostByRepositoryID):
+          let knownIDs = Set(state.repositories.ids)
+          var updated = state.codeHostByRepositoryID.filter { knownIDs.contains($0.key) }
+          for (id, host) in codeHostByRepositoryID where knownIDs.contains(id) {
+            updated[id] = host
+          }
+          state.codeHostByRepositoryID = updated
+          return .none
+
         case .selectArchivedWorktrees:
+          state.isShelfActive = false
+          recordWorktreeHistoryTransition(from: state.selectedWorktreeID, to: nil, state: &state)
           state.selection = .archivedWorktrees
           state.sidebarSelectedWorktreeIDs = []
           return .send(.delegate(.selectedWorktreeChanged(nil)))
@@ -549,6 +731,7 @@ struct RepositoriesFeature {
           // Remember the current worktree so toggleCanvas can restore it.
           state.preCanvasWorktreeID = state.selectedWorktreeID
           state.preCanvasTerminalTargetID = state.selectedTerminalWorktree?.id
+          state.isShelfActive = false
           state.selection = .canvas
           state.sidebarSelectedWorktreeIDs = []
           return .run { _ in
@@ -580,6 +763,106 @@ struct RepositoriesFeature {
             return .send(.selectCanvas)
           }
 
+        case .selectNextShelfBook:
+          guard let book = shelfBook(atOffset: 1, state: state) else { return .none }
+          return shelfBookSelectionEffect(for: book)
+
+        case .selectPreviousShelfBook:
+          guard let book = shelfBook(atOffset: -1, state: state) else { return .none }
+          return shelfBookSelectionEffect(for: book)
+
+        case .selectShelfBook(let index):
+          let books = state.orderedShelfBooks()
+          let zeroBased = index - 1
+          guard books.indices.contains(zeroBased) else { return .none }
+          return shelfBookSelectionEffect(for: books[zeroBased])
+
+        case .markWorktreeOpened(let worktreeID):
+          state.openedWorktreeIDs.insert(worktreeID)
+          return .none
+
+        case .markWorktreeClosed(let worktreeID):
+          // Closing the last tab of a book retires the book from the
+          // Shelf. If this book was the one currently open on the
+          // Shelf, move focus to the neighboring book — the one after
+          // the closed book if there is one, otherwise the one before
+          // — so the user lands close to where they were instead of
+          // always snapping back to the first spine.
+          let replacement = replacementBookAfterClosing(
+            worktreeID: worktreeID,
+            state: state
+          )
+          state.openedWorktreeIDs.remove(worktreeID)
+          if let replacement {
+            return shelfBookSelectionEffect(for: replacement)
+          }
+          return .none
+
+        case .toggleShelf:
+          if state.isShelfActive {
+            state.isShelfActive = false
+            return .none
+          }
+          // Entering Shelf requires at least one book to render.
+          guard !state.orderedWorktreeRows().isEmpty else { return .none }
+          // Shelf is mutually exclusive with Canvas / archived views: when entering
+          // Shelf we need a worktree- or repository-scoped selection.
+          let needsRedirect: Bool
+          switch state.selection {
+          case .some(.worktree), .some(.repository):
+            needsRedirect = false
+          case .some(.canvas), .some(.archivedWorktrees), .none:
+            needsRedirect = true
+          }
+          state.isShelfActive = true
+          if !needsRedirect {
+            // The current selection is the open book — make sure it's
+            // registered as opened so the Shelf renders at least this
+            // spine. Guards the case where `selection` was set without
+            // going through `.selectWorktree` / `.selectRepository`.
+            //
+            // Also request terminal focus for this worktree so that
+            // `ShelfOpenBookView.onAppear` forces focus onto the
+            // surface (`forceAutoFocus: shouldFocusTerminal(for:)`).
+            // Without this, entering Shelf via keyboard shortcut
+            // leaves the first responder on the (now-dismissed) menu
+            // path, and `applySurfaceActivity`'s "only refocus if the
+            // current responder is a GhosttySurfaceView" guard skips
+            // the surface — user can't type until a second
+            // interaction (tab switch, etc.) forces focus through.
+            switch state.selection {
+            case .some(.worktree(let id)):
+              state.openedWorktreeIDs.insert(id)
+              state.pendingTerminalFocusWorktreeIDs.insert(id)
+            case .some(.repository(let id))
+            where state.repositories[id: id]?.kind == .plain:
+              state.openedWorktreeIDs.insert(id)
+              state.pendingTerminalFocusWorktreeIDs.insert(id)
+            default:
+              break
+            }
+            return .none
+          }
+          // Same fallback chain as `toggleCanvas`'s exit path: prefer
+          // the card the user was actively focused on in Canvas so a
+          // Canvas → Shelf switch opens *that* card as the active book,
+          // not whatever was selected before Canvas was entered.
+          let targetID =
+            terminalClient.canvasFocusedWorktreeID()
+            ?? state.preCanvasTerminalTargetID
+            ?? state.preCanvasWorktreeID
+            ?? state.lastFocusedWorktreeID
+            ?? state.orderedWorktreeRows().first?.id
+          guard let targetID else { return .none }
+          if state.worktree(for: targetID) == nil,
+            let repository = state.repositories[id: targetID],
+            repository.kind == .plain
+          {
+            state.pendingTerminalFocusWorktreeIDs.insert(targetID)
+            return .send(.selectRepository(targetID))
+          }
+          return .send(.selectWorktree(targetID, focusTerminal: true))
+
         case .setSidebarSelectedWorktreeIDs(let worktreeIDs):
           let validWorktreeIDs = Set(state.orderedWorktreeRows().map(\.id))
           var nextWorktreeIDs = worktreeIDs.intersection(validWorktreeIDs)
@@ -590,26 +873,78 @@ struct RepositoriesFeature {
           return .none
 
         case .selectRepository(let repositoryID):
+          // `inout state` cannot be captured by a closure, so use the
+          // begin/end token API rather than the `interval` helper.
+          let selectRepoToken = repositoriesLogger.beginInterval("reducer.selectRepository")
+          defer { repositoriesLogger.endInterval(selectRepoToken) }
           guard let repositoryID, state.repositories[id: repositoryID] != nil else { return .none }
+          recordWorktreeHistoryTransition(from: state.selectedWorktreeID, to: nil, state: &state)
           state.selection = .repository(repositoryID)
           state.sidebarSelectedWorktreeIDs = []
+          if state.repositories[id: repositoryID]?.kind == .plain {
+            // Plain folder selection opens the folder as a Shelf book.
+            state.openedWorktreeIDs.insert(repositoryID)
+          }
           return .send(.delegate(.selectedWorktreeChanged(state.selectedTerminalWorktree)))
 
-        case .selectWorktree(let worktreeID, let focusTerminal):
-          setSingleWorktreeSelection(worktreeID, state: &state)
+        case .selectWorktree(let worktreeID, let focusTerminal, let recordHistory):
+          let selectWtToken = repositoriesLogger.beginInterval("reducer.selectWorktree")
+          defer { repositoriesLogger.endInterval(selectWtToken) }
+          setSingleWorktreeSelection(worktreeID, state: &state, recordHistory: recordHistory)
           if focusTerminal, let worktreeID {
             state.pendingTerminalFocusWorktreeIDs.insert(worktreeID)
+          }
+          if let worktreeID {
+            state.openedWorktreeIDs.insert(worktreeID)
           }
           let selectedWorktree = state.worktree(for: worktreeID)
           return .send(.delegate(.selectedWorktreeChanged(selectedWorktree)))
 
         case .selectNextWorktree:
+          // In Shelf, the vertical arrow pair maps to tab navigation
+          // within the open book — horizontal (← / →) is already book
+          // navigation, so the two axes match the Shelf layout.
+          if state.isShelfActive, let worktree = state.selectedTerminalWorktree {
+            return .run { _ in
+              await terminalClient.send(.performBindingAction(worktree, action: "next_tab"))
+            }
+          }
           guard let id = state.worktreeID(byOffset: 1) else { return .none }
           return .send(.selectWorktree(id))
 
         case .selectPreviousWorktree:
+          if state.isShelfActive, let worktree = state.selectedTerminalWorktree {
+            return .run { _ in
+              await terminalClient.send(.performBindingAction(worktree, action: "previous_tab"))
+            }
+          }
           guard let id = state.worktreeID(byOffset: -1) else { return .none }
           return .send(.selectWorktree(id))
+
+        case .worktreeHistoryBack:
+          return navigateWorktreeHistory(direction: .backward, state: &state)
+
+        case .worktreeHistoryForward:
+          return navigateWorktreeHistory(direction: .forward, state: &state)
+
+        case .revealSelectedWorktreeInSidebar:
+          guard let worktreeID = state.selectedWorktreeID,
+            let repositoryID = state.repositoryID(containing: worktreeID)
+          else { return .none }
+          state.$collapsedRepositoryIDs.withLock {
+            $0.removeAll { $0 == repositoryID }
+          }
+          state.nextPendingSidebarRevealID += 1
+          state.pendingSidebarReveal = .init(
+            id: state.nextPendingSidebarRevealID,
+            worktreeID: worktreeID
+          )
+          return .none
+
+        case .consumePendingSidebarReveal(let revealID):
+          guard state.pendingSidebarReveal?.id == revealID else { return .none }
+          state.pendingSidebarReveal = nil
+          return .none
 
         case .requestRenameBranch(let worktreeID, let branchName):
           guard let worktree = state.worktree(for: worktreeID) else { return .none }
@@ -715,7 +1050,7 @@ struct RepositoriesFeature {
             return .cancel(id: CancelID.toastAutoDismiss)
           case .success, .warning:
             return .run { send in
-              try? await ContinuousClock().sleep(for: .seconds(2.5))
+              try? await ContinuousClock().sleep(for: .seconds(3))
               await send(.dismissToast)
             }
             .cancellable(id: CancelID.toastAutoDismiss, cancelInFlight: true)
@@ -744,8 +1079,13 @@ struct RepositoriesFeature {
             }
             let worktreeURL = worktree.workingDirectory
             let gitClient = gitClient
+            let previousLineChanges = normalizedLineChanges(state.worktreeInfoByID[worktreeID])
             return .run { send in
               if let changes = await gitClient.lineChanges(worktreeURL) {
+                let nextLineChanges = normalizedLineChanges(added: changes.added, removed: changes.removed)
+                guard !lineChangesEqual(nextLineChanges, previousLineChanges) else {
+                  return
+                }
                 await send(
                   .worktreeLineChangesLoaded(
                     worktreeID: worktreeID,
@@ -796,9 +1136,40 @@ struct RepositoriesFeature {
       worktreeOrderingReducer
       githubIntegrationReducer
       repositoryManagementReducer
+      Scope(state: \.activeAgents, action: \.activeAgents) {
+        ActiveAgentsFeature()
+      }
     }
     .ifLet(\.$worktreeCreationPrompt, action: \.worktreeCreationPrompt) {
       WorktreeCreationPromptFeature()
+    }
+  }
+
+  func detectCodeHostsEffect(for repositories: IdentifiedArrayOf<Repository>) -> Effect<Action>? {
+    let targets =
+      repositories
+      .filter { $0.capabilities.supportsCodeHost }
+      .map { (id: $0.id, rootURL: $0.rootURL) }
+    guard !targets.isEmpty else { return nil }
+    let gitClient = gitClient
+    return .run { send in
+      var detected: [Repository.ID: CodeHost] = [:]
+      await withTaskGroup(of: (Repository.ID, CodeHost).self) { group in
+        for target in targets {
+          group.addTask {
+            let host = await gitClient.repositoryWebURL(target.rootURL)?.host
+            return (target.id, CodeHost.from(host: host))
+          }
+        }
+        for await (id, host) in group {
+          detected[id] = host
+        }
+      }
+      // `codeHost(for:)` defaults to `.unknown`, so storing `.unknown`
+      // explicitly is a no-op. Skip the round trip when nothing is known.
+      let meaningful = detected.filter { $0.value != .unknown }
+      guard !meaningful.isEmpty else { return }
+      await send(.codeHostsDetected(meaningful))
     }
   }
 
@@ -811,7 +1182,13 @@ struct RepositoriesFeature {
     let gitClient = gitClient
     let githubCLI = githubCLI
     return .run { send in
-      guard let remoteInfo = await gitClient.remoteInfo(repositoryRootURL) else {
+      guard
+        let remoteInfo = await Self.resolveGithubRemoteInfo(
+          repositoryRootURL: repositoryRootURL,
+          githubCLI: githubCLI,
+          gitClient: gitClient
+        )
+      else {
         await send(.githubIntegration(.repositoryPullRequestRefreshCompleted(repositoryID)))
         return
       }
@@ -1081,7 +1458,7 @@ struct RepositoriesFeature {
   func applyRepositories(
     _ repositories: [Repository],
     roots: [URL],
-    shouldPruneArchivedWorktreeIDs: Bool,
+    shouldPruneArchivedWorktrees: Bool,
     state: inout State,
     animated: Bool
   ) -> ApplyRepositoriesResult {
@@ -1146,9 +1523,9 @@ struct RepositoriesFeature {
     let didPrunePinned = prunePinnedWorktreeIDs(state: &state)
     let didPruneRepositoryOrder = pruneRepositoryOrderIDs(roots: roots, state: &state)
     let didPruneWorktreeOrder = pruneWorktreeOrderByRepository(roots: roots, state: &state)
-    let didPruneArchivedWorktreeIDs =
-      shouldPruneArchivedWorktreeIDs
-      ? pruneArchivedWorktreeIDs(availableWorktreeIDs: availableWorktreeIDs, state: &state)
+    let didPruneArchivedWorktrees =
+      shouldPruneArchivedWorktrees
+      ? pruneArchivedWorktrees(availableWorktreeIDs: availableWorktreeIDs, state: &state)
       : false
     if !state.isShowingArchivedWorktrees, !state.isShowingCanvas,
       !isSidebarSelectionValid(state.selection, state: state)
@@ -1172,7 +1549,7 @@ struct RepositoriesFeature {
       didPrunePinned: didPrunePinned,
       didPruneRepositoryOrder: didPruneRepositoryOrder,
       didPruneWorktreeOrder: didPruneWorktreeOrder,
-      didPruneArchivedWorktreeIDs: didPruneArchivedWorktreeIDs
+      didPruneArchivedWorktrees: didPruneArchivedWorktrees
     )
   }
 
@@ -1241,6 +1618,16 @@ struct RepositoriesFeature {
 extension RepositoriesFeature.State {
   var selectedWorktreeID: Worktree.ID? {
     selection?.worktreeID
+  }
+
+  var canNavigateWorktreeHistoryBackward: Bool {
+    guard canUseWorktreeHistory else { return false }
+    return canNavigateWorktreeHistory(stack: worktreeHistoryBackStack)
+  }
+
+  var canNavigateWorktreeHistoryForward: Bool {
+    guard canUseWorktreeHistory else { return false }
+    return canNavigateWorktreeHistory(stack: worktreeHistoryForwardStack)
   }
 
   var selectedRepositoryID: Repository.ID? {
@@ -1312,16 +1699,45 @@ extension RepositoriesFeature.State {
     selection == .canvas
   }
 
+  var isShowingShelf: Bool {
+    isShelfActive
+  }
+
+  private var canUseWorktreeHistory: Bool {
+    // History navigation only makes sense when a worktree is the current
+    // anchor. With selection on `.repository`, `.archivedWorktrees`, or `nil`,
+    // there is no "current" position to step away from, so the menu items
+    // (and their shortcuts) must be disabled.
+    !isShowingShelf && !isShowingCanvas && selectedWorktreeID != nil
+  }
+
   var archivedWorktreeIDSet: Set<Worktree.ID> {
-    Set(archivedWorktreeIDs)
+    Set(archivedWorktrees.map(\.id))
   }
 
   func isWorktreeArchived(_ id: Worktree.ID) -> Bool {
     archivedWorktreeIDSet.contains(id)
   }
 
+  private func canNavigateWorktreeHistory(stack: [Worktree.ID]) -> Bool {
+    stack.reversed().contains { id in
+      id != selectedWorktreeID && isSelectionValid(id, state: self)
+    }
+  }
+
   func worktreeInfo(for worktreeID: Worktree.ID) -> WorktreeInfoEntry? {
     worktreeInfoByID[worktreeID]
+  }
+
+  func codeHost(for repositoryID: Repository.ID) -> CodeHost {
+    codeHostByRepositoryID[repositoryID] ?? .unknown
+  }
+
+  func codeHost(forWorktreeID worktreeID: Worktree.ID?) -> CodeHost {
+    guard let worktreeID, let repositoryID = repositoryID(containing: worktreeID) else {
+      return .unknown
+    }
+    return codeHost(for: repositoryID)
   }
 
   func worktreesForInfoWatcher() -> [Worktree] {
@@ -1487,7 +1903,7 @@ extension RepositoriesFeature.State {
   }
 
   func isMainWorktree(_ worktree: Worktree) -> Bool {
-    worktree.workingDirectory.standardizedFileURL == worktree.repositoryRootURL.standardizedFileURL
+    worktree.isMain
   }
 
   func isWorktreeMerged(_ worktree: Worktree) -> Bool {
@@ -1666,7 +2082,7 @@ extension RepositoriesFeature.State {
   }
 }
 
-struct WorktreeRowSections {
+struct WorktreeRowSections: Equatable {
   let main: WorktreeRowModel?
   let pinned: [WorktreeRowModel]
   let pending: [WorktreeRowModel]
@@ -1913,12 +2329,13 @@ private func updateWorktreeName(
   }
 }
 
-private func updateWorktreeLineChanges(
+@discardableResult
+func updateWorktreeLineChanges(
   worktreeID: Worktree.ID,
   added: Int,
   removed: Int,
   state: inout RepositoriesFeature.State
-) {
+) -> Bool {
   var entry = state.worktreeInfoByID[worktreeID] ?? WorktreeInfoEntry()
   if added == 0 && removed == 0 {
     entry.addedLines = nil
@@ -1927,11 +2344,19 @@ private func updateWorktreeLineChanges(
     entry.addedLines = added
     entry.removedLines = removed
   }
+  let previousEntry = state.worktreeInfoByID[worktreeID]
   if entry.isEmpty {
+    guard previousEntry != nil else {
+      return false
+    }
     state.worktreeInfoByID.removeValue(forKey: worktreeID)
-  } else {
-    state.worktreeInfoByID[worktreeID] = entry
+    return true
   }
+  guard previousEntry != entry else {
+    return false
+  }
+  state.worktreeInfoByID[worktreeID] = entry
+  return true
 }
 
 func updateWorktreePullRequest(
@@ -1945,6 +2370,37 @@ func updateWorktreePullRequest(
     state.worktreeInfoByID.removeValue(forKey: worktreeID)
   } else {
     state.worktreeInfoByID[worktreeID] = entry
+  }
+}
+
+nonisolated private func normalizedLineChanges(_ entry: WorktreeInfoEntry?) -> (added: Int, removed: Int)? {
+  guard let added = entry?.addedLines, let removed = entry?.removedLines else {
+    return nil
+  }
+  return normalizedLineChanges(added: added, removed: removed)
+}
+
+nonisolated private func normalizedLineChanges(
+  added: Int,
+  removed: Int
+) -> (added: Int, removed: Int)? {
+  guard added != 0 || removed != 0 else {
+    return nil
+  }
+  return (added, removed)
+}
+
+nonisolated private func lineChangesEqual(
+  _ lhs: (added: Int, removed: Int)?,
+  _ rhs: (added: Int, removed: Int)?
+) -> Bool {
+  switch (lhs, rhs) {
+  case (nil, nil):
+    return true
+  case (.some(let lhs), .some(let rhs)):
+    return lhs.added == rhs.added && lhs.removed == rhs.removed
+  default:
+    return false
   }
 }
 
@@ -1990,8 +2446,10 @@ func restoreSelection(
   guard state.selection == .worktree(pendingID) else { return }
   setSingleWorktreeSelection(
     isSelectionValid(id, state: state) ? id : nil,
-    state: &state
+    state: &state,
+    recordHistory: false
   )
+  pruneWorktreeHistoryTails(state: &state)
 }
 
 func isSelectionValid(
@@ -1999,6 +2457,66 @@ func isSelectionValid(
   state: RepositoriesFeature.State
 ) -> Bool {
   state.selectedRow(for: id) != nil
+}
+
+/// Choose the next book to open after `worktreeID`'s book is retired.
+/// Prefer the book immediately *after* the closed one in Shelf order;
+/// fall back to the one immediately *before* it; return `nil` when
+/// Shelf is inactive, when the closed book isn't the currently open
+/// one, or when no other books remain.
+func replacementBookAfterClosing(
+  worktreeID: Worktree.ID,
+  state: RepositoriesFeature.State
+) -> ShelfBook? {
+  guard state.isShelfActive,
+    state.selectedTerminalWorktree?.id == worktreeID
+  else { return nil }
+  let books = state.orderedShelfBooks()
+  guard let index = books.firstIndex(where: { $0.id == worktreeID }) else {
+    return nil
+  }
+  let remaining = books.enumerated().filter { $0.offset != index }.map(\.element)
+  guard !remaining.isEmpty else { return nil }
+  // After removing index `index`, the "next" book is now at position
+  // `index` in the reduced list (if it exists); otherwise the last one
+  // is the "previous" relative to what was closed.
+  if index < remaining.count {
+    return remaining[index]
+  }
+  return remaining.last
+}
+
+/// Returns the Shelf book at `offset` positions from the currently open
+/// book (wrapping around the book list). Returns nil if there are no
+/// books. When there is no open book, offset > 0 picks the first book
+/// and offset < 0 picks the last.
+func shelfBook(
+  atOffset offset: Int,
+  state: RepositoriesFeature.State
+) -> ShelfBook? {
+  let books = state.orderedShelfBooks()
+  guard !books.isEmpty else { return nil }
+  if let currentID = state.openShelfBookID,
+    let currentIndex = books.firstIndex(where: { $0.id == currentID })
+  {
+    let nextIndex = (currentIndex + offset + books.count) % books.count
+    return books[nextIndex]
+  }
+  return offset > 0 ? books.first : books.last
+}
+
+/// Dispatches the right selection action for a book — a worktree vs.
+/// a plain folder requires different Reducer actions even though the
+/// Shelf treats them uniformly.
+func shelfBookSelectionEffect(
+  for book: ShelfBook
+) -> Effect<RepositoriesFeature.Action> {
+  switch book.kind {
+  case .worktree:
+    return .send(.selectWorktree(book.id, focusTerminal: true, recordHistory: false))
+  case .plainFolder:
+    return .send(.selectRepository(book.repositoryID))
+  }
 }
 
 private func isSidebarSelectionValid(
@@ -2019,13 +2537,115 @@ private func isSidebarSelectionValid(
 
 func setSingleWorktreeSelection(
   _ worktreeID: Worktree.ID?,
-  state: inout RepositoriesFeature.State
+  state: inout RepositoriesFeature.State,
+  recordHistory: Bool = false
 ) {
+  if recordHistory {
+    recordWorktreeHistoryTransition(from: state.selectedWorktreeID, to: worktreeID, state: &state)
+  }
   state.selection = worktreeID.map(SidebarSelection.worktree)
   if let worktreeID {
     state.sidebarSelectedWorktreeIDs = [worktreeID]
   } else {
     state.sidebarSelectedWorktreeIDs = []
+  }
+}
+
+private enum WorktreeHistoryDirection {
+  case backward
+  case forward
+}
+
+private let worktreeHistoryStackLimit = 50
+
+private func navigateWorktreeHistory(
+  direction: WorktreeHistoryDirection,
+  state: inout RepositoriesFeature.State
+) -> Effect<RepositoriesFeature.Action> {
+  guard !state.isShowingShelf, !state.isShowingCanvas else { return .none }
+  guard let currentID = state.selectedWorktreeID else { return .none }
+  var sourceStack =
+    direction == .backward
+    ? state.worktreeHistoryBackStack
+    : state.worktreeHistoryForwardStack
+  guard let destinationID = popValidWorktreeHistoryDestination(from: &sourceStack, currentID: currentID, state: state)
+  else {
+    if direction == .backward {
+      state.worktreeHistoryBackStack = sourceStack
+    } else {
+      state.worktreeHistoryForwardStack = sourceStack
+    }
+    return .none
+  }
+
+  if direction == .backward {
+    state.worktreeHistoryBackStack = sourceStack
+    pushWorktreeHistoryID(currentID, onto: &state.worktreeHistoryForwardStack)
+  } else {
+    state.worktreeHistoryForwardStack = sourceStack
+    pushWorktreeHistoryID(currentID, onto: &state.worktreeHistoryBackStack)
+  }
+  setSingleWorktreeSelection(destinationID, state: &state, recordHistory: false)
+  state.openedWorktreeIDs.insert(destinationID)
+  return .send(.delegate(.selectedWorktreeChanged(state.worktree(for: destinationID))))
+}
+
+private func recordWorktreeHistoryTransition(
+  from previousID: Worktree.ID?,
+  to nextID: Worktree.ID?,
+  state: inout RepositoriesFeature.State
+) {
+  // Shelf / Canvas are mode switches, not worktree navigation — leave
+  // history frozen so users can resume Back/Forward where they left off.
+  guard !state.isShowingShelf, !state.isShowingCanvas else { return }
+  // No-op transitions (same worktree, or both endpoints nil) leave history alone.
+  if previousID == nextID { return }
+  // Any user-initiated selection change invalidates the redo path. Crucially
+  // this also fires when the user navigates to/from .repository or
+  // .archivedWorktrees (one or both IDs nil), so a stale forward stack
+  // can't carry over into an unrelated path.
+  state.worktreeHistoryForwardStack = []
+  // Only push onto the back stack when leaving a still-valid worktree; we
+  // don't want non-worktree selections (repository / archived) showing up
+  // as Back targets.
+  guard let previousID, isSelectionValid(previousID, state: state) else { return }
+  pushWorktreeHistoryID(previousID, onto: &state.worktreeHistoryBackStack)
+}
+
+private func popValidWorktreeHistoryDestination(
+  from stack: inout [Worktree.ID],
+  currentID: Worktree.ID,
+  state: RepositoriesFeature.State
+) -> Worktree.ID? {
+  while let candidateID = stack.popLast() {
+    guard candidateID != currentID, isSelectionValid(candidateID, state: state) else {
+      continue
+    }
+    return candidateID
+  }
+  return nil
+}
+
+private func pushWorktreeHistoryID(_ id: Worktree.ID, onto stack: inout [Worktree.ID]) {
+  stack.append(id)
+  if stack.count > worktreeHistoryStackLimit {
+    stack.removeFirst(stack.count - worktreeHistoryStackLimit)
+  }
+}
+
+private func pruneWorktreeHistoryTails(state: inout RepositoriesFeature.State) {
+  pruneWorktreeHistoryTail(stack: &state.worktreeHistoryBackStack, state: state)
+  pruneWorktreeHistoryTail(stack: &state.worktreeHistoryForwardStack, state: state)
+}
+
+private func pruneWorktreeHistoryTail(
+  stack: inout [Worktree.ID],
+  state: RepositoriesFeature.State
+) {
+  while let last = stack.last,
+    last == state.selectedWorktreeID || !isSelectionValid(last, state: state)
+  {
+    stack.removeLast()
   }
 }
 
@@ -2138,13 +2758,13 @@ private func pruneWorktreeOrderByRepository(
   return false
 }
 
-private func pruneArchivedWorktreeIDs(
+private func pruneArchivedWorktrees(
   availableWorktreeIDs: Set<Worktree.ID>,
   state: inout RepositoriesFeature.State
 ) -> Bool {
-  let pruned = state.archivedWorktreeIDs.filter { availableWorktreeIDs.contains($0) }
-  if pruned != state.archivedWorktreeIDs {
-    state.archivedWorktreeIDs = pruned
+  let pruned = state.archivedWorktrees.filter { availableWorktreeIDs.contains($0.id) }
+  if pruned != state.archivedWorktrees {
+    state.archivedWorktrees = pruned
     return true
   }
   return false
@@ -2170,6 +2790,18 @@ func firstAvailableWorktreeID(
     return nil
   }
   return state.orderedWorktrees(in: repository).first?.id
+}
+
+private func findWorktreeAndRepository(
+  worktreeID: Worktree.ID,
+  state: RepositoriesFeature.State
+) -> (worktree: Worktree, repository: Repository)? {
+  for repository in state.repositories {
+    if let worktree = repository.worktrees[id: worktreeID] {
+      return (worktree, repository)
+    }
+  }
+  return nil
 }
 
 func nextWorktreeID(

@@ -1,10 +1,14 @@
 import AppKit
+import Sharing
 import SwiftUI
 import UniformTypeIdentifiers
 
 struct TerminalSplitTreeView: View {
   let tree: SplitTree<GhosttySurfaceView>
   var pinnedSize: CGSize?
+  var activeSurfaceID: UUID?
+  var unfocusedSplitOverlay: (fill: Color?, opacity: Double)
+  let hasNotification: (UUID) -> Bool
   let action: (Operation) -> Void
 
   private static let dragType = UTType(exportedAs: "com.onevcat.prowl.ghosttySurfaceId")
@@ -23,8 +27,16 @@ struct TerminalSplitTreeView: View {
 
   var body: some View {
     if let node = tree.visibleNode {
-      SubtreeView(node: node, isRoot: node == tree.root, pinnedSize: pinnedSize, action: action)
-        .id(node.structuralIdentity)
+      SubtreeView(
+        node: node,
+        isRoot: node == tree.root,
+        pinnedSize: pinnedSize,
+        activeSurfaceID: activeSurfaceID,
+        unfocusedSplitOverlay: unfocusedSplitOverlay,
+        hasNotification: hasNotification,
+        action: action
+      )
+      .id(node.structuralIdentity)
     }
   }
 
@@ -38,12 +50,23 @@ struct TerminalSplitTreeView: View {
     let node: SplitTree<GhosttySurfaceView>.Node
     var isRoot: Bool = false
     var pinnedSize: CGSize?
+    var activeSurfaceID: UUID?
+    var unfocusedSplitOverlay: (fill: Color?, opacity: Double)
+    let hasNotification: (UUID) -> Bool
     let action: (Operation) -> Void
 
     var body: some View {
       switch node {
       case .leaf(let leafView):
-        LeafView(surfaceView: leafView, isSplit: !isRoot, pinnedSize: pinnedSize, action: action)
+        LeafView(
+          surfaceView: leafView,
+          isSplit: !isRoot,
+          isFocused: leafView.id == activeSurfaceID,
+          unfocusedSplitOverlay: unfocusedSplitOverlay,
+          hasNotification: hasNotification(leafView.id),
+          pinnedSize: pinnedSize,
+          action: action
+        )
       case .split(let split):
         let splitViewDirection: SplitView<SubtreeView, SubtreeView>.Direction =
           switch split.direction {
@@ -63,13 +86,27 @@ struct TerminalSplitTreeView: View {
             set: {
               action(.resize(node: node, ratio: Double($0)))
             }),
-          dividerColor: .secondary,
+          dividerColor: Color(nsColor: .separatorColor),
           resizeIncrements: .init(width: 1, height: 1),
           left: {
-            SubtreeView(node: split.left, pinnedSize: leftPinned, action: action)
+            SubtreeView(
+              node: split.left,
+              pinnedSize: leftPinned,
+              activeSurfaceID: activeSurfaceID,
+              unfocusedSplitOverlay: unfocusedSplitOverlay,
+              hasNotification: hasNotification,
+              action: action
+            )
           },
           right: {
-            SubtreeView(node: split.right, pinnedSize: rightPinned, action: action)
+            SubtreeView(
+              node: split.right,
+              pinnedSize: rightPinned,
+              activeSurfaceID: activeSurfaceID,
+              unfocusedSplitOverlay: unfocusedSplitOverlay,
+              hasNotification: hasNotification,
+              action: action
+            )
           },
           onEqualize: {
             action(.equalize)
@@ -93,15 +130,33 @@ struct TerminalSplitTreeView: View {
   struct LeafView: View {
     let surfaceView: GhosttySurfaceView
     let isSplit: Bool
+    var isFocused: Bool = true
+    var unfocusedSplitOverlay: (fill: Color?, opacity: Double)
+    let hasNotification: Bool
     var pinnedSize: CGSize?
     let action: (Operation) -> Void
 
     @State private var dropState: DropState = .idle
+    @Shared(.settingsFile) private var settingsFile: SettingsFile
+
+    private var shouldDim: Bool {
+      isSplit
+        && !isFocused
+        && settingsFile.global.dimUnfocusedSplits
+        && unfocusedSplitOverlay.fill != nil
+        && unfocusedSplitOverlay.opacity > 0
+    }
 
     var body: some View {
       GeometryReader { geometry in
         GhosttyTerminalView(surfaceView: surfaceView, pinnedSize: pinnedSize)
           .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .overlay {
+            unfocusedSplitOverlay.fill
+              .opacity(shouldDim ? unfocusedSplitOverlay.opacity : 0)
+              .allowsHitTesting(false)
+              .animation(.easeOut(duration: 0.12), value: shouldDim)
+          }
           .overlay(alignment: .top) {
             GhosttySurfaceProgressOverlay(state: surfaceView.bridge.state)
           }
@@ -109,6 +164,13 @@ struct TerminalSplitTreeView: View {
             if surfaceView.bridge.state.searchNeedle != nil {
               GhosttySurfaceSearchOverlay(surfaceView: surfaceView)
             }
+          }
+          .overlay(alignment: .topTrailing) {
+            SurfaceNotificationDot()
+              .padding(6)
+              .opacity(hasNotification ? 1 : 0)
+              .allowsHitTesting(false)
+              .animation(.easeInOut(duration: 0.2), value: hasNotification)
           }
           .overlay(alignment: .top) {
             if isSplit {
@@ -293,12 +355,27 @@ struct TerminalSplitTreeView: View {
   }
 }
 
+private struct SurfaceNotificationDot: View {
+  var body: some View {
+    Circle()
+      .fill(.orange)
+      .frame(width: 8, height: 8)
+      .overlay {
+        Circle().stroke(.background, lineWidth: 1)
+      }
+      .accessibilityLabel("Unread notifications")
+  }
+}
+
 // MARK: - Accessibility Container
 
 /// Wraps the SwiftUI split tree in an AppKit view so we can expose an ordered
 /// list of terminal panes to assistive technologies.
 struct TerminalSplitTreeAXContainer: NSViewRepresentable {
   let tree: SplitTree<GhosttySurfaceView>
+  var activeSurfaceID: UUID?
+  var unfocusedSplitOverlay: (fill: Color?, opacity: Double)
+  let hasNotification: (UUID) -> Bool
   let action: (TerminalSplitTreeView.Operation) -> Void
 
   func makeNSView(context: Context) -> TerminalSplitAXContainerView {
@@ -307,7 +384,15 @@ struct TerminalSplitTreeAXContainer: NSViewRepresentable {
 
   func updateNSView(_ nsView: TerminalSplitAXContainerView, context: Context) {
     nsView.update(
-      rootView: AnyView(TerminalSplitTreeView(tree: tree, action: action)),
+      rootView: AnyView(
+        TerminalSplitTreeView(
+          tree: tree,
+          activeSurfaceID: activeSurfaceID,
+          unfocusedSplitOverlay: unfocusedSplitOverlay,
+          hasNotification: hasNotification,
+          action: action
+        )
+      ),
       panes: tree.visibleLeaves()
     )
   }

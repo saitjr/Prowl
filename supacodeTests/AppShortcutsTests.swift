@@ -71,7 +71,7 @@ struct AppShortcutsTests {
         AppShortcuts.CommandID.runScript: KeybindingUserOverride(
           binding: nil,
           isEnabled: false
-        ),
+        )
       ]
     )
     let resolvedDisabled = KeybindingResolver.resolve(
@@ -92,6 +92,7 @@ struct AppShortcutsTests {
       [
         "openSettings=\(AppShortcuts.openSettings.display)",
         "toggleLeftSidebar=\(AppShortcuts.toggleLeftSidebar.display)",
+        "toggleActiveAgentsPanel=\(AppShortcuts.toggleActiveAgentsPanel.display)",
         "runScript=\(AppShortcuts.runScript.display)",
         "stopRunScript=\(AppShortcuts.stopRunScript.display)",
         "checkForUpdates=\(AppShortcuts.checkForUpdates.display)",
@@ -119,6 +120,7 @@ struct AppShortcutsTests {
       [
         "openSettings=⌘,",
         "toggleLeftSidebar=⌘⌃S",
+        "toggleActiveAgentsPanel=⌘⌥P",
         "runScript=⌘R",
         "stopRunScript=⌘.",
         "checkForUpdates=⌘⇧U",
@@ -155,6 +157,10 @@ struct AppShortcutsTests {
       AppShortcuts.commandPalette.display
     )
     expectNoDifference(
+      idToDisplay["toggle_active_agents_panel"],
+      AppShortcuts.toggleActiveAgentsPanel.display
+    )
+    expectNoDifference(
       idToDisplay["quit_application"],
       AppShortcuts.quitApplication.display
     )
@@ -168,6 +174,7 @@ struct AppShortcutsTests {
     )
 
     #expect(idToScope["command_palette"] == .configurableAppAction)
+    #expect(idToScope["toggle_active_agents_panel"] == .configurableAppAction)
     #expect(idToScope["quit_application"] == .systemFixedAppAction)
     #expect(idToScope["rename_branch"] == .localInteraction)
     #expect(idToScope["select_all_canvas_cards"] == .localInteraction)
@@ -268,7 +275,7 @@ struct AppShortcutsTests {
       overrides: [
         AppShortcuts.CommandID.selectNextTerminalTab: KeybindingUserOverride(
           binding: Keybinding(key: "t", modifiers: .init(command: true, shift: true))
-        ),
+        )
       ]
     )
     let resolved = KeybindingResolver.resolve(
@@ -288,7 +295,7 @@ struct AppShortcutsTests {
       overrides: [
         AppShortcuts.CommandID.selectWorktree1: KeybindingUserOverride(
           binding: Keybinding(key: "m", modifiers: .init(control: true))
-        ),
+        )
       ]
     )
     let resolved = KeybindingResolver.resolve(
@@ -308,7 +315,7 @@ struct AppShortcutsTests {
         AppShortcuts.CommandID.selectNextTerminalPane: KeybindingUserOverride(
           binding: Keybinding(key: "k", modifiers: .init(command: true)),
           isEnabled: false
-        ),
+        )
       ]
     )
     let resolved = KeybindingResolver.resolve(
@@ -327,7 +334,7 @@ struct AppShortcutsTests {
       overrides: [
         AppShortcuts.CommandID.openSettings: KeybindingUserOverride(
           binding: Keybinding(key: ";", modifiers: .init(command: true))
-        ),
+        )
       ]
     )
     let resolved = KeybindingResolver.resolve(
@@ -359,7 +366,7 @@ struct AppShortcutsTests {
         AppShortcuts.CommandID.openSettings: KeybindingUserOverride(
           binding: Keybinding(key: ";", modifiers: .init(command: true)),
           isEnabled: false
-        ),
+        )
       ]
     )
     let resolved = KeybindingResolver.resolve(
@@ -397,7 +404,7 @@ struct AppShortcutsTests {
       overrides: [
         AppShortcuts.CommandID.openSettings: KeybindingUserOverride(
           binding: Keybinding(key: "space", modifiers: .init(command: true))
-        ),
+        )
       ]
     )
     let resolved = KeybindingResolver.resolve(
@@ -416,7 +423,7 @@ struct AppShortcutsTests {
       overrides: [
         AppShortcuts.CommandID.openSettings: KeybindingUserOverride(
           binding: Keybinding(key: "digit_1", modifiers: .init(command: true))
-        ),
+        )
       ]
     )
     let resolved = KeybindingResolver.resolve(

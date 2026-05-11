@@ -2,10 +2,13 @@ import SwiftUI
 
 struct TerminalTabsView: View {
   @Bindable var manager: TerminalTabManager
+  let renameTab: (TerminalTabID) -> Void
+  let changeIcon: (TerminalTabID) -> Void
   let closeTab: (TerminalTabID) -> Void
   let closeOthers: (TerminalTabID) -> Void
   let closeToRight: (TerminalTabID) -> Void
   let closeAll: () -> Void
+  let hasNotification: (TerminalTabID) -> Bool
 
   @State private var draggingTabId: TerminalTabID?
   @State private var draggingStartLocation: CGFloat?
@@ -28,6 +31,9 @@ struct TerminalTabsView: View {
             draggingStartLocation: $draggingStartLocation,
             closeButtonGestureActive: $closeButtonGestureActive,
             fixedTabWidth: effectiveTabWidth,
+            hasNotification: hasNotification,
+            renameTab: renameTab,
+            changeIcon: changeIcon,
             closeTab: closeTab,
             closeOthers: closeOthers,
             closeToRight: closeToRight,

@@ -1,16 +1,21 @@
 import ComposableArchitecture
 import CustomDump
 import DependenciesTestSupport
+import Foundation
 import Testing
 
 @testable import supacode
 
 @MainActor
+@Suite(
+  .serialized,
+  .dependency(\.defaultAppStorage, .appFeatureSettingsChangedTests)
+)
 struct AppFeatureSettingsChangedTests {
   @Test(.dependencies) func settingsChangedPropagatesRepositorySettings() async {
     var settings = GlobalSettings.default
     settings.githubIntegrationEnabled = false
-    settings.automaticallyArchiveMergedWorktrees = true
+    settings.mergedWorktreeAction = .archive
     settings.moveNotifiedWorktreeToTop = false
     let store = TestStore(initialState: AppFeature.State()) {
       AppFeature()
@@ -20,9 +25,10 @@ struct AppFeatureSettingsChangedTests {
     await store.receive(\.repositories.githubIntegration.setGithubIntegrationEnabled) {
       $0.repositories.githubIntegrationAvailability = .disabled
     }
-    await store.receive(\.repositories.githubIntegration.setAutomaticallyArchiveMergedWorktrees) {
-      $0.repositories.automaticallyArchiveMergedWorktrees = true
+    await store.receive(\.repositories.githubIntegration.setMergedWorktreeAction) {
+      $0.repositories.mergedWorktreeAction = .archive
     }
+    await store.receive(\.repositories.setArchivedAutoDeletePeriod)
     await store.receive(\.repositories.worktreeOrdering.setMoveNotifiedWorktreeToTop) {
       $0.repositories.moveNotifiedWorktreeToTop = false
     }
@@ -57,13 +63,49 @@ struct AppFeatureSettingsChangedTests {
     #expect(watcherCommands.value.isEmpty)
   }
 
+  @Test(.dependencies) func agentEntryAutoShowsActiveAgentsPanelWhenEnabled() async {
+    var settings = SettingsFeature.State()
+    settings.autoShowActiveAgentsPanel = true
+    UserDefaults.appFeatureSettingsChangedTests.set(true, forKey: "activeAgentsPanelHidden")
+    let state = AppFeature.State(settings: settings)
+    let entry = activeAgentEntry()
+
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    }
+
+    await store.send(.terminalEvent(.agentEntryChanged(entry))) {
+      $0.repositories.activeAgents.$isPanelHidden.withLock { $0 = false }
+    }
+    await store.receive(\.repositories.activeAgents.agentEntryChanged) {
+      $0.repositories.activeAgents.entries = [entry]
+    }
+  }
+
+  @Test(.dependencies) func agentEntryKeepsActiveAgentsPanelHiddenWhenAutoShowDisabled() async {
+    var settings = SettingsFeature.State()
+    settings.autoShowActiveAgentsPanel = false
+    UserDefaults.appFeatureSettingsChangedTests.set(true, forKey: "activeAgentsPanelHidden")
+    let state = AppFeature.State(settings: settings)
+    let entry = activeAgentEntry()
+
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    }
+
+    await store.send(.terminalEvent(.agentEntryChanged(entry)))
+    await store.receive(\.repositories.activeAgents.agentEntryChanged) {
+      $0.repositories.activeAgents.entries = [entry]
+    }
+  }
+
   @Test(.dependencies) func settingsChangedRecomputesResolvedKeybindings() async {
     var settings = GlobalSettings.default
     settings.keybindingUserOverrides = KeybindingUserOverrideStore(
       overrides: [
         AppShortcuts.CommandID.openSettings: KeybindingUserOverride(
           binding: Keybinding(key: ";", modifiers: .init(command: true))
-        ),
+        )
       ]
     )
 
@@ -81,7 +123,8 @@ struct AppFeatureSettingsChangedTests {
       $0.resolvedKeybindings = expectedResolved
     }
     await store.receive(\.repositories.githubIntegration.setGithubIntegrationEnabled)
-    await store.receive(\.repositories.githubIntegration.setAutomaticallyArchiveMergedWorktrees)
+    await store.receive(\.repositories.githubIntegration.setMergedWorktreeAction)
+    await store.receive(\.repositories.setArchivedAutoDeletePeriod)
     await store.receive(\.repositories.worktreeOrdering.setMoveNotifiedWorktreeToTop)
     await store.receive(\.updates.applySettings) {
       $0.updates.didConfigureUpdates = true
@@ -112,4 +155,30 @@ struct AppFeatureSettingsChangedTests {
       $0.repositories.statusToast = .success("Saved terminal layout cleared")
     }
   }
+
+  private func activeAgentEntry() -> ActiveAgentEntry {
+    ActiveAgentEntry(
+      id: fixedUUID(0),
+      worktreeID: "/repo/wt",
+      worktreeName: "wt",
+      tabID: TerminalTabID(rawValue: fixedUUID(1)),
+      tabTitle: "codex",
+      surfaceID: fixedUUID(0),
+      paneIndex: 1,
+      agent: .codex,
+      rawState: .working,
+      displayState: .working,
+      lastChangedAt: Date(timeIntervalSince1970: 10)
+    )
+  }
+
+  private func fixedUUID(_ value: UInt8) -> UUID {
+    UUID(uuid: (value, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+  }
+}
+
+extension UserDefaults {
+  fileprivate nonisolated(unsafe) static let appFeatureSettingsChangedTests = UserDefaults(
+    suiteName: "com.onevcat.Prowl.AppFeatureSettingsChangedTests"
+  )!
 }

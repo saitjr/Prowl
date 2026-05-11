@@ -29,7 +29,14 @@ private enum GhosttyCLI {
 
 @MainActor
 final class SupacodeAppDelegate: NSObject, NSApplicationDelegate {
-  var appStore: StoreOf<AppFeature>?
+  var appStore: StoreOf<AppFeature>? {
+    didSet {
+      guard let appStore else { return }
+      setSystemNotificationTapHandler { [weak appStore] worktreeID, surfaceID in
+        appStore?.send(.systemNotificationTapped(worktreeID: worktreeID, surfaceID: surfaceID))
+      }
+    }
+  }
   var terminalManager: WorktreeTerminalManager?
   var cliSocketServer: CLISocketServer?
 
@@ -43,13 +50,16 @@ final class SupacodeAppDelegate: NSObject, NSApplicationDelegate {
 
   func applicationDidBecomeActive(_ notification: Notification) {
     let app = NSApplication.shared
-    guard !app.windows.contains(where: \.isVisible) else { return }
-    _ = showMainWindow(from: app)
+    let hasVisibleMainWindow = app.windows.contains { window in
+      window.isVisible && !(window is NSPanel)
+    }
+    guard !hasVisibleMainWindow else { return }
+    app.surfaceMainWindow()
   }
 
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
     if flag { return true }
-    return showMainWindow(from: sender) ? false : true
+    return !sender.surfaceMainWindow()
   }
 
   func applicationWillTerminate(_ notification: Notification) {
@@ -61,27 +71,6 @@ final class SupacodeAppDelegate: NSObject, NSApplicationDelegate {
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
     false
-  }
-
-  private func mainWindow(from sender: NSApplication) -> NSWindow? {
-    if let window = sender.windows.first(where: { $0.identifier?.rawValue == "main" }) {
-      return window
-    }
-    if let window = sender.windows.first(where: { $0.identifier?.rawValue != "settings" }) {
-      return window
-    }
-    return sender.windows.first
-  }
-
-  private func showMainWindow(from sender: NSApplication) -> Bool {
-    HotkeyWindowManager.shared.hideIfVisible()
-    guard let window = mainWindow(from: sender) else { return false }
-    if window.isMiniaturized {
-      window.deminiaturize(nil)
-    }
-    sender.activate(ignoringOtherApps: true)
-    window.makeKeyAndOrderFront(nil)
-    return true
   }
 }
 
@@ -96,16 +85,27 @@ struct SupacodeApp: App {
   @State private var commandKeyObserver: CommandKeyObserver
   @State private var cliSocketServer: CLISocketServer
   @State private var store: StoreOf<AppFeature>
+  @State private var memoryWatchdog: MemoryWatchdog
 
   private static func cliLaunchOpenPath() -> String? {
     let args = ProcessInfo.processInfo.arguments
     guard let flagIndex = args.firstIndex(of: ProwlSocket.cliOpenPathArgument),
-          args.indices.contains(flagIndex + 1)
+      args.indices.contains(flagIndex + 1)
     else {
       return nil
     }
     let path = args[flagIndex + 1]
     return path.isEmpty ? nil : path
+  }
+
+  private static func mainWindow(from app: NSApplication) -> NSWindow? {
+    if let window = app.windows.first(where: { $0.identifier?.rawValue == "main" }) {
+      return window
+    }
+    if let window = app.windows.first(where: { $0.identifier?.rawValue != "settings" }) {
+      return window
+    }
+    return app.windows.first
   }
 
   @MainActor
@@ -131,6 +131,45 @@ struct SupacodeApp: App {
     )
   }
 
+  /// Reads a secret from Info.plist, returning nil when the value is empty or
+  /// still contains an unsubstituted `$(VAR)` placeholder (the Makefile did not
+  /// inject a value for that key).
+  private static func infoPlistSecret(_ dictionary: [String: Any], key: String) -> String? {
+    guard let value = dictionary[key] as? String else { return nil }
+    guard !value.isEmpty, !value.hasPrefix("$(") else { return nil }
+    return value
+  }
+
+  private static func bootstrapTelemetry(initialSettings: GlobalSettings) {
+    #if !DEBUG
+      let infoDictionary = Bundle.main.infoDictionary ?? [:]
+      let releaseName = (infoDictionary["CFBundleShortVersionString"] as? String).map { "prowl@\($0)" }
+      let environment = initialSettings.updateChannel == .tip ? "tip" : "production"
+
+      if initialSettings.crashReportsEnabled, let dsn = infoPlistSecret(infoDictionary, key: "ProwlSentryDSN") {
+        SentrySDK.start { options in
+          options.dsn = dsn
+          options.environment = environment
+          if let releaseName { options.releaseName = releaseName }
+          options.tracesSampleRate = 0.05
+          options.enableAppHangTracking = false
+        }
+      }
+      if initialSettings.analyticsEnabled,
+        let apiKey = infoPlistSecret(infoDictionary, key: "ProwlPostHogAPIKey"),
+        let host = infoPlistSecret(infoDictionary, key: "ProwlPostHogHost")
+      {
+        let config = PostHogConfig(apiKey: apiKey, host: host)
+        config.enableSwizzling = false
+        config.captureApplicationLifecycleEvents = false
+        config.captureScreenViews = false
+        PostHogSDK.shared.setup(config)
+        PostHogSDK.shared.register(AnalyticsContext.superProperties)
+        PostHogSDK.shared.identify(InstallIdentifier.current)
+      }
+    #endif
+  }
+
   @MainActor init() {
     NSWindow.allowsAutomaticWindowTabbing = false
     UserDefaults.standard.set(200, forKey: "NSInitialToolTipDelay")
@@ -140,25 +179,7 @@ struct SupacodeApp: App {
       schema: .appResolverSchema(),
       userOverrides: initialSettings.keybindingUserOverrides
     )
-    #if !DEBUG
-      if initialSettings.crashReportsEnabled {
-        SentrySDK.start { options in
-          options.dsn = "__SENTRY_DSN__"
-          options.tracesSampleRate = 1.0
-          options.enableAppHangTracking = false
-        }
-      }
-      if initialSettings.analyticsEnabled {
-        let posthogAPIKey = "__POSTHOG_API_KEY__"
-        let posthogHost = "__POSTHOG_HOST__"
-        let config = PostHogConfig(apiKey: posthogAPIKey, host: posthogHost)
-        config.enableSwizzling = false
-        PostHogSDK.shared.setup(config)
-        if let hardwareUUID = HardwareInfo.uuid {
-          PostHogSDK.shared.identify(hardwareUUID)
-        }
-      }
-    #endif
+    Self.bootstrapTelemetry(initialSettings: initialSettings)
     if let resourceURL = Bundle.main.resourceURL?.appendingPathComponent("ghostty") {
       setenv("GHOSTTY_RESOURCES_DIR", resourceURL.path, 1)
     }
@@ -170,7 +191,7 @@ struct SupacodeApp: App {
         preconditionFailure("ghostty_init failed")
       }
     }
-    let runtime = GhosttyRuntime()
+    let runtime = GhosttyRuntime(initialColorScheme: initialSettings.appearanceMode.colorScheme)
     _ghostty = State(initialValue: runtime)
     let shortcuts = GhosttyShortcutManager(runtime: runtime)
     _ghosttyShortcuts = State(initialValue: shortcuts)
@@ -193,17 +214,7 @@ struct SupacodeApp: App {
       AppFeature()
         .logActions()
     } withDependencies: { values in
-      values.terminalClient = TerminalClient(
-        send: { command in
-          terminalManager.handleCommand(command)
-        },
-        events: {
-          terminalManager.eventStream()
-        },
-        canvasFocusedWorktreeID: {
-          terminalManager.canvasFocusedWorktreeID
-        }
-      )
+      values.terminalClient = Self.makeTerminalClient(terminalManager: terminalManager)
       values.worktreeInfoWatcher = WorktreeInfoWatcherClient(
         send: { command in
           worktreeInfoWatcher.handleCommand(command)
@@ -218,6 +229,22 @@ struct SupacodeApp: App {
     let cliServer = Self.makeCLISocketServer(appStore: appStore, terminalManager: terminalManager)
     _cliSocketServer = State(initialValue: cliServer)
 
+    let watchdog = MemoryWatchdog(
+      analyticsCapture: AnalyticsClient.liveValue.capture,
+      contextProvider: { [appStore, terminalManager] in
+        let state = appStore.state
+        return MemoryWatchdog.Context(
+          repositoryCount: state.repositories.repositories.count,
+          openedWorktreeCount: state.repositories.repositories.flatMap(\.worktrees).count,
+          terminalTabCount: terminalManager.activeWorktreeStates.flatMap(\.tabManager.tabs).count
+        )
+      }
+    )
+    #if !DEBUG
+      watchdog.start()
+    #endif
+    _memoryWatchdog = State(initialValue: watchdog)
+
     runtime.onQuit = { [weak appStore] in
       appStore?.send(.requestQuit)
     }
@@ -226,6 +253,35 @@ struct SupacodeApp: App {
       terminalManager: terminalManager,
       cliServer: cliServer,
       hotkeyWindowSettings: initialSettings.hotkeyWindow
+    )
+    #if DEBUG
+      DebugWindowManager.shared.configure(store: appStore)
+    #endif
+  }
+
+  private static func makeTerminalClient(terminalManager: WorktreeTerminalManager) -> TerminalClient {
+    TerminalClient(
+      send: { command in
+        terminalManager.handleCommand(command)
+      },
+      events: {
+        terminalManager.eventStream()
+      },
+      canvasFocusedWorktreeID: {
+        terminalManager.canvasFocusedWorktreeID
+      },
+      latestUnreadNotification: {
+        terminalManager.latestUnreadNotificationLocation()
+      },
+      focusSurface: { worktreeID, surfaceID in
+        terminalManager.focusSurface(worktreeID: worktreeID, surfaceID: surfaceID)
+      },
+      markNotificationRead: { worktreeID, notificationID in
+        terminalManager.markNotificationRead(worktreeID: worktreeID, notificationID: notificationID)
+      },
+      markNotificationsReadForSurface: { worktreeID, surfaceID in
+        terminalManager.markNotificationsRead(worktreeID: worktreeID, surfaceID: surfaceID)
+      }
     )
   }
 
@@ -473,8 +529,8 @@ struct SupacodeApp: App {
       let repoRoot = repository.rootURL
         .standardizedFileURL.path(percentEncoded: false)
       if repoRoot == normalized,
-         !repository.capabilities.supportsWorktrees,
-         repository.capabilities.supportsRunnableFolderActions
+        !repository.capabilities.supportsWorktrees,
+        repository.capabilities.supportsRunnableFolderActions
       {
         return OpenResolverResult(
           resolution: .exactRoot, worktreeID: repository.id,
@@ -501,7 +557,7 @@ struct SupacodeApp: App {
         }
       }
       if !repository.capabilities.supportsWorktrees,
-         repository.capabilities.supportsRunnableFolderActions
+        repository.capabilities.supportsRunnableFolderActions
       {
         let repoRoot = repository.rootURL
           .standardizedFileURL.path(percentEncoded: false)
@@ -531,8 +587,8 @@ struct SupacodeApp: App {
         return worktree
       }
       if repository.id == id,
-         repository.capabilities.supportsRunnableFolderActions,
-         !repository.capabilities.supportsWorktrees
+        repository.capabilities.supportsRunnableFolderActions,
+        !repository.capabilities.supportsWorktrees
       {
         return Worktree(
           id: repository.id,
@@ -564,31 +620,15 @@ struct SupacodeApp: App {
 
   private static func bringMainWindowToFront() -> Bool {
     HotkeyWindowManager.shared.hideIfVisible()
-    let app = NSApplication.shared
-    guard let window = mainWindow(from: app) else {
-      return false
-    }
-    if window.isMiniaturized {
-      window.deminiaturize(nil)
-    }
-    app.activate(ignoringOtherApps: true)
-    window.makeKeyAndOrderFront(nil)
-    return true
-  }
-
-  private static func mainWindow(from app: NSApplication) -> NSWindow? {
-    if let window = app.windows.first(where: { $0.identifier?.rawValue == "main" }) {
-      return window
-    }
-    if let window = app.windows.first(where: { $0.identifier?.rawValue != "settings" }) {
-      return window
-    }
-    return app.windows.first
+    NSApplication.shared.surfaceMainWindow()
   }
 
   var body: some Scene {
-    Window("Prowl", id: "main") {
-      GhosttyColorSchemeSyncView(ghostty: ghostty) {
+    Window("Prowl", id: WindowID.main) {
+      GhosttyColorSchemeSyncView(
+        ghostty: ghostty,
+        preferredColorScheme: store.settings.appearanceMode.colorScheme
+      ) {
         ContentView(store: store, terminalManager: terminalManager)
           .environment(ghosttyShortcuts)
           .environment(commandKeyObserver)
@@ -608,17 +648,20 @@ struct SupacodeApp: App {
     .environment(ghosttyShortcuts)
     .environment(commandKeyObserver)
     .commands {
-      WorktreeCommands(store: store)
-      SidebarCommands(store: store)
-      TerminalCommands(ghosttyShortcuts: ghosttyShortcuts)
-      WindowCommands(
-        ghosttyShortcuts: ghosttyShortcuts,
-        resolvedKeybindings: store.resolvedKeybindings,
-        hotkeyWindowShortcut: store.settings.hotkeyWindow.isEnabled
-          ? store.settings.hotkeyWindow.hotkey?.keyboardShortcut : nil,
-        hotkeyWindowShortcutDisplay: store.settings.hotkeyWindow.isEnabled
-          ? store.settings.hotkeyWindow.hotkey?.display : nil
-      )
+      // Grouped to keep `commands` under SwiftUI's CommandsBuilder
+      // tuple-arity limit when `#if DEBUG` adds the Debug menu below.
+      Group {
+        WorktreeCommands(store: store)
+        SidebarCommands(store: store)
+        TerminalCommands(ghosttyShortcuts: ghosttyShortcuts)
+        WindowCommands(
+          store: store,
+          terminalManager: terminalManager,
+          ghosttyShortcuts: ghosttyShortcuts,
+          resolvedKeybindings: store.resolvedKeybindings,
+          settingsWindowManager: SettingsWindowManager.shared
+        )
+      }
       CommandGroup(after: .textEditing) {
         Button("Command Palette") {
           store.send(.commandPalette(.togglePresented))
@@ -652,6 +695,13 @@ struct SupacodeApp: App {
         }
         .help("Install the prowl command line tool to /usr/local/bin")
       }
+      #if DEBUG
+        CommandMenu("Debug") {
+          Button("Icon Catalog") {
+            DebugWindowManager.shared.show()
+          }
+        }
+      #endif
       CommandGroup(replacing: .help) {
         Button("Homepage", systemImage: "house") {
           if let url = URL(string: "https://prowl.onev.cat/") {

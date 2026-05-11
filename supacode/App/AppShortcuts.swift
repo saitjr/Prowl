@@ -93,15 +93,32 @@ enum AppShortcuts {
     static let openRepository = "open_repository"
     static let openPullRequest = "open_pull_request"
     static let toggleLeftSidebar = "toggle_left_sidebar"
+    static let toggleActiveAgentsPanel = "toggle_active_agents_panel"
     static let refreshWorktrees = "refresh_worktrees"
+    static let jumpToLatestUnread = "jump_to_latest_unread"
     static let runScript = "run_script"
     static let stopScript = "stop_script"
     static let checkForUpdates = "check_for_updates"
     static let showDiff = "show_diff"
     static let toggleCanvas = "toggle_canvas"
+    static let toggleShelf = "toggle_shelf"
+    static let selectNextShelfBook = "select_next_shelf_book"
+    static let selectPreviousShelfBook = "select_previous_shelf_book"
+    static let selectShelfBook1 = "select_shelf_book_1"
+    static let selectShelfBook2 = "select_shelf_book_2"
+    static let selectShelfBook3 = "select_shelf_book_3"
+    static let selectShelfBook4 = "select_shelf_book_4"
+    static let selectShelfBook5 = "select_shelf_book_5"
+    static let selectShelfBook6 = "select_shelf_book_6"
+    static let selectShelfBook7 = "select_shelf_book_7"
+    static let selectShelfBook8 = "select_shelf_book_8"
+    static let selectShelfBook9 = "select_shelf_book_9"
+    static let revealInSidebar = "reveal_in_sidebar"
     static let archivedWorktrees = "archived_worktrees"
     static let selectNextWorktree = "select_next_worktree"
     static let selectPreviousWorktree = "select_previous_worktree"
+    static let worktreeHistoryBack = "worktree_history_back"
+    static let worktreeHistoryForward = "worktree_history_forward"
     static let selectWorktree1 = "select_worktree_1"
     static let selectWorktree2 = "select_worktree_2"
     static let selectWorktree3 = "select_worktree_3"
@@ -166,7 +183,9 @@ enum AppShortcuts {
   static let openRepository = AppShortcut(key: "o", modifiers: [.command, .shift])
   static let openPullRequest = AppShortcut(key: "g", modifiers: [.command, .control])
   static let toggleLeftSidebar = AppShortcut(key: "s", modifiers: [.command, .control])
+  static let toggleActiveAgentsPanel = AppShortcut(key: "p", modifiers: [.command, .option])
   static let refreshWorktrees = AppShortcut(key: "r", modifiers: [.command, .shift])
+  static let jumpToLatestUnread = AppShortcut(key: "u", modifiers: [.command, .option])
   static let runScript = AppShortcut(key: "r", modifiers: .command)
   static let stopRunScript = AppShortcut(key: ".", modifiers: .command)
   static let checkForUpdates = AppShortcut(key: "u", modifiers: [.command, .shift])
@@ -174,6 +193,48 @@ enum AppShortcuts {
   static let toggleCanvas = AppShortcut(
     keyEquivalent: .return, ghosttyKeyName: "return", modifiers: [.command, .option]
   )
+  static let toggleShelf = AppShortcut(
+    keyEquivalent: .return, ghosttyKeyName: "return", modifiers: [.command, .shift]
+  )
+  static let selectNextShelfBook = AppShortcut(
+    keyEquivalent: .rightArrow, ghosttyKeyName: "arrow_right", modifiers: [.command, .control]
+  )
+  static let selectPreviousShelfBook = AppShortcut(
+    keyEquivalent: .leftArrow, ghosttyKeyName: "arrow_left", modifiers: [.command, .control]
+  )
+  static let selectShelfBook1 = AppShortcut(key: "1", modifiers: [.control, .option])
+  static let selectShelfBook2 = AppShortcut(key: "2", modifiers: [.control, .option])
+  static let selectShelfBook3 = AppShortcut(key: "3", modifiers: [.control, .option])
+  static let selectShelfBook4 = AppShortcut(key: "4", modifiers: [.control, .option])
+  static let selectShelfBook5 = AppShortcut(key: "5", modifiers: [.control, .option])
+  static let selectShelfBook6 = AppShortcut(key: "6", modifiers: [.control, .option])
+  static let selectShelfBook7 = AppShortcut(key: "7", modifiers: [.control, .option])
+  static let selectShelfBook8 = AppShortcut(key: "8", modifiers: [.control, .option])
+  static let selectShelfBook9 = AppShortcut(key: "9", modifiers: [.control, .option])
+  static let shelfBookSelection: [AppShortcut] = [
+    selectShelfBook1,
+    selectShelfBook2,
+    selectShelfBook3,
+    selectShelfBook4,
+    selectShelfBook5,
+    selectShelfBook6,
+    selectShelfBook7,
+    selectShelfBook8,
+    selectShelfBook9,
+  ]
+
+  static let shelfBookSelectionCommandIDs: [String] = [
+    CommandID.selectShelfBook1,
+    CommandID.selectShelfBook2,
+    CommandID.selectShelfBook3,
+    CommandID.selectShelfBook4,
+    CommandID.selectShelfBook5,
+    CommandID.selectShelfBook6,
+    CommandID.selectShelfBook7,
+    CommandID.selectShelfBook8,
+    CommandID.selectShelfBook9,
+  ]
+  static let revealInSidebar = AppShortcut(key: "l", modifiers: [.command, .shift])
   static let archivedWorktrees = AppShortcut(key: "a", modifiers: [.command, .control])
   static let selectNextWorktree = AppShortcut(
     keyEquivalent: .downArrow, ghosttyKeyName: "arrow_down", modifiers: [.command, .control]
@@ -181,6 +242,8 @@ enum AppShortcuts {
   static let selectPreviousWorktree = AppShortcut(
     keyEquivalent: .upArrow, ghosttyKeyName: "arrow_up", modifiers: [.command, .control]
   )
+  static let worktreeHistoryBack = AppShortcut(key: "[", modifiers: [.command, .option])
+  static let worktreeHistoryForward = AppShortcut(key: "]", modifiers: [.command, .option])
   static let selectWorktree1 = AppShortcut(key: "1", modifiers: [.control])
   static let selectWorktree2 = AppShortcut(key: "2", modifiers: [.control])
   static let selectWorktree3 = AppShortcut(key: "3", modifiers: [.control])
@@ -268,6 +331,8 @@ enum AppShortcuts {
   private static let reservedCustomCommandBindings: [ReservedCustomCommandBinding] = [
     .init(actionTitle: "Open Settings", shortcut: openSettings),
     .init(actionTitle: "Toggle Left Sidebar", shortcut: toggleLeftSidebar),
+    .init(actionTitle: "Toggle Active Agents Panel", shortcut: toggleActiveAgentsPanel),
+    .init(actionTitle: "Jump to Latest Unread", shortcut: jumpToLatestUnread),
     .init(actionTitle: "Run Script", shortcut: runScript),
     .init(actionTitle: "Stop Script", shortcut: stopRunScript),
     .init(actionTitle: "Check for Updates", shortcut: checkForUpdates),
@@ -326,7 +391,7 @@ enum AppShortcuts {
     ),
     .init(
       id: CommandID.openPullRequest,
-      title: "Open Pull Request",
+      title: "Open on Code Host",
       scope: .configurableAppAction,
       shortcut: openPullRequest
     ),
@@ -337,10 +402,22 @@ enum AppShortcuts {
       shortcut: toggleLeftSidebar
     ),
     .init(
+      id: CommandID.toggleActiveAgentsPanel,
+      title: "Toggle Active Agents Panel",
+      scope: .configurableAppAction,
+      shortcut: toggleActiveAgentsPanel
+    ),
+    .init(
       id: CommandID.refreshWorktrees,
       title: "Refresh Worktrees",
       scope: .configurableAppAction,
       shortcut: refreshWorktrees
+    ),
+    .init(
+      id: CommandID.jumpToLatestUnread,
+      title: "Jump to Latest Unread",
+      scope: .configurableAppAction,
+      shortcut: jumpToLatestUnread
     ),
     .init(
       id: CommandID.runScript,
@@ -373,6 +450,84 @@ enum AppShortcuts {
       shortcut: toggleCanvas
     ),
     .init(
+      id: CommandID.toggleShelf,
+      title: "Toggle Shelf",
+      scope: .configurableAppAction,
+      shortcut: toggleShelf
+    ),
+    .init(
+      id: CommandID.selectNextShelfBook,
+      title: "Select Next Book",
+      scope: .configurableAppAction,
+      shortcut: selectNextShelfBook
+    ),
+    .init(
+      id: CommandID.selectPreviousShelfBook,
+      title: "Select Previous Book",
+      scope: .configurableAppAction,
+      shortcut: selectPreviousShelfBook
+    ),
+    .init(
+      id: CommandID.selectShelfBook1,
+      title: "Select Book 1",
+      scope: .configurableAppAction,
+      shortcut: selectShelfBook1
+    ),
+    .init(
+      id: CommandID.selectShelfBook2,
+      title: "Select Book 2",
+      scope: .configurableAppAction,
+      shortcut: selectShelfBook2
+    ),
+    .init(
+      id: CommandID.selectShelfBook3,
+      title: "Select Book 3",
+      scope: .configurableAppAction,
+      shortcut: selectShelfBook3
+    ),
+    .init(
+      id: CommandID.selectShelfBook4,
+      title: "Select Book 4",
+      scope: .configurableAppAction,
+      shortcut: selectShelfBook4
+    ),
+    .init(
+      id: CommandID.selectShelfBook5,
+      title: "Select Book 5",
+      scope: .configurableAppAction,
+      shortcut: selectShelfBook5
+    ),
+    .init(
+      id: CommandID.selectShelfBook6,
+      title: "Select Book 6",
+      scope: .configurableAppAction,
+      shortcut: selectShelfBook6
+    ),
+    .init(
+      id: CommandID.selectShelfBook7,
+      title: "Select Book 7",
+      scope: .configurableAppAction,
+      shortcut: selectShelfBook7
+    ),
+    .init(
+      id: CommandID.selectShelfBook8,
+      title: "Select Book 8",
+      scope: .configurableAppAction,
+      shortcut: selectShelfBook8
+    ),
+    .init(
+      id: CommandID.selectShelfBook9,
+      title: "Select Book 9",
+      scope: .configurableAppAction,
+      shortcut: selectShelfBook9
+    ),
+    .init(
+      id: CommandID.revealInSidebar,
+      title: "Reveal in Sidebar",
+      scope: .configurableAppAction,
+      shortcut: revealInSidebar
+    ),
+    .init(
       id: CommandID.archivedWorktrees,
       title: "Archived Worktrees",
       scope: .configurableAppAction,
@@ -380,15 +535,27 @@ enum AppShortcuts {
     ),
     .init(
       id: CommandID.selectNextWorktree,
-      title: "Select Next Worktree",
+      title: "Select Next Worktree (Tab in Shelf View)",
       scope: .configurableAppAction,
       shortcut: selectNextWorktree
     ),
     .init(
       id: CommandID.selectPreviousWorktree,
-      title: "Select Previous Worktree",
+      title: "Select Previous Worktree (Tab in Shelf View)",
       scope: .configurableAppAction,
       shortcut: selectPreviousWorktree
+    ),
+    .init(
+      id: CommandID.worktreeHistoryBack,
+      title: "Back in Worktree History",
+      scope: .configurableAppAction,
+      shortcut: worktreeHistoryBack
+    ),
+    .init(
+      id: CommandID.worktreeHistoryForward,
+      title: "Forward in Worktree History",
+      scope: .configurableAppAction,
+      shortcut: worktreeHistoryForward
     ),
     .init(
       id: CommandID.selectWorktree1,
@@ -705,15 +872,32 @@ enum AppShortcuts {
     openRepository,
     openPullRequest,
     toggleLeftSidebar,
+    toggleActiveAgentsPanel,
+    revealInSidebar,
     refreshWorktrees,
+    jumpToLatestUnread,
     runScript,
     stopRunScript,
     checkForUpdates,
     showDiff,
     toggleCanvas,
+    toggleShelf,
+    selectNextShelfBook,
+    selectPreviousShelfBook,
+    selectShelfBook1,
+    selectShelfBook2,
+    selectShelfBook3,
+    selectShelfBook4,
+    selectShelfBook5,
+    selectShelfBook6,
+    selectShelfBook7,
+    selectShelfBook8,
+    selectShelfBook9,
     archivedWorktrees,
     selectNextWorktree,
     selectPreviousWorktree,
+    worktreeHistoryBack,
+    worktreeHistoryForward,
     selectWorktree1,
     selectWorktree2,
     selectWorktree3,

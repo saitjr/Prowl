@@ -29,9 +29,12 @@ struct CommandPaletteItem: Identifiable, Equatable {
     case newWorktree
     case removeWorktree(Worktree.ID, Repository.ID)
     case archiveWorktree(Worktree.ID, Repository.ID)
+    case viewArchivedWorktrees
     case refreshWorktrees
+    case jumpToLatestUnread
     case ghosttyCommand(String)
     case openPullRequest(Worktree.ID)
+    case openRepositoryOnCodeHost(Worktree.ID)
     case markPullRequestReady(Worktree.ID)
     case mergePullRequest(Worktree.ID)
     case closePullRequest(Worktree.ID)
@@ -40,14 +43,17 @@ struct CommandPaletteItem: Identifiable, Equatable {
     case rerunFailedJobs(Worktree.ID)
     case openFailingCheckDetails(Worktree.ID)
     case installCLI
+    case changeFocusedTabIcon(Worktree.ID)
     #if DEBUG
       case debugTestToast(RepositoriesFeature.StatusToast)
+      case debugSimulateUpdateFound
     #endif
   }
 
   var isGlobal: Bool {
     switch kind {
-    case .checkForUpdates, .openRepository, .openSettings, .newWorktree, .refreshWorktrees, .installCLI:
+    case .checkForUpdates, .openRepository, .openSettings, .newWorktree, .viewArchivedWorktrees,
+      .refreshWorktrees, .installCLI, .jumpToLatestUnread:
       return true
     case .ghosttyCommand:
       return false
@@ -60,10 +66,14 @@ struct CommandPaletteItem: Identifiable, Equatable {
       .rerunFailedJobs,
       .openFailingCheckDetails:
       return true
-    case .worktreeSelect, .removeWorktree, .archiveWorktree:
+    case .worktreeSelect,
+      .removeWorktree,
+      .archiveWorktree,
+      .changeFocusedTabIcon,
+      .openRepositoryOnCodeHost:
       return false
     #if DEBUG
-      case .debugTestToast:
+      case .debugTestToast, .debugSimulateUpdateFound:
         return true
     #endif
     }
@@ -71,11 +81,13 @@ struct CommandPaletteItem: Identifiable, Equatable {
 
   var isRootAction: Bool {
     switch kind {
-    case .checkForUpdates, .openRepository, .openSettings, .newWorktree, .refreshWorktrees, .installCLI:
+    case .checkForUpdates, .openRepository, .openSettings, .newWorktree, .viewArchivedWorktrees,
+      .refreshWorktrees, .installCLI, .jumpToLatestUnread:
       return true
     case .ghosttyCommand:
       return false
     case .openPullRequest,
+      .openRepositoryOnCodeHost,
       .markPullRequestReady,
       .mergePullRequest,
       .closePullRequest,
@@ -85,10 +97,11 @@ struct CommandPaletteItem: Identifiable, Equatable {
       .openFailingCheckDetails,
       .worktreeSelect,
       .removeWorktree,
-      .archiveWorktree:
+      .archiveWorktree,
+      .changeFocusedTabIcon:
       return false
     #if DEBUG
-      case .debugTestToast:
+      case .debugTestToast, .debugSimulateUpdateFound:
         return false
     #endif
     }
@@ -104,9 +117,14 @@ struct CommandPaletteItem: Identifiable, Equatable {
       return AppShortcuts.CommandID.openSettings
     case .newWorktree:
       return AppShortcuts.CommandID.newWorktree
+    case .viewArchivedWorktrees:
+      return AppShortcuts.CommandID.archivedWorktrees
     case .refreshWorktrees:
       return AppShortcuts.CommandID.refreshWorktrees
-    case .openPullRequest:
+    case .jumpToLatestUnread:
+      return AppShortcuts.CommandID.jumpToLatestUnread
+    case .openPullRequest,
+      .openRepositoryOnCodeHost:
       return AppShortcuts.CommandID.openPullRequest
     case .ghosttyCommand,
       .markPullRequestReady,
@@ -119,10 +137,11 @@ struct CommandPaletteItem: Identifiable, Equatable {
       .installCLI,
       .worktreeSelect,
       .removeWorktree,
-      .archiveWorktree:
+      .archiveWorktree,
+      .changeFocusedTabIcon:
       return nil
     #if DEBUG
-      case .debugTestToast:
+      case .debugTestToast, .debugSimulateUpdateFound:
         return nil
     #endif
     }

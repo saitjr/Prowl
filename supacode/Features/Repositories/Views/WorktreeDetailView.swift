@@ -13,6 +13,8 @@ struct WorktreeDetailView: View {
     let runScriptEnabled: Bool
     let runScriptIsRunning: Bool
     let customCommands: [UserCustomCommand]
+    let isUpdateAvailable: Bool
+    let availableUpdateVersion: String?
   }
 
   @Bindable var store: StoreOf<AppFeature>
@@ -46,7 +48,10 @@ struct WorktreeDetailView: View {
     let runScriptEnabled = hasActiveTerminalTarget
     let runScriptIsRunning = selectedTerminalWorktree.flatMap { state.runScriptStatusByWorktreeID[$0.id] } == true
     let customCommands = state.selectedCustomCommands
-    let notificationGroups = repositories.toolbarNotificationGroups(terminalManager: terminalManager)
+    let notificationGroups = repositories.toolbarNotificationGroups(
+      terminalManager: terminalManager,
+      customTitles: repositories.repositoryCustomTitles
+    )
     let unseenNotificationWorktreeCount = notificationGroups.reduce(0) { count, repository in
       count + repository.unseenWorktreeCount
     }
@@ -57,18 +62,16 @@ struct WorktreeDetailView: View {
       selectedTerminalWorktree: selectedTerminalWorktree,
       selectedWorktreeSummaries: selectedWorktreeSummaries
     )
-    .navigationTitle(repositories.isShowingCanvas ? "Canvas" : "")
+    .navigationTitle(WindowTitle.compute(repositories: repositories, terminalManager: terminalManager))
     .toolbar(removing: repositories.isShowingCanvas ? nil : .title)
     .toolbar {
       if repositories.isShowingCanvas {
-        ToolbarItem(placement: .primaryAction) {
-          ToolbarNotificationsPopoverButton(
-            groups: notificationGroups,
-            unseenWorktreeCount: unseenNotificationWorktreeCount,
-            onSelectNotification: selectToolbarNotification,
-            onDismissAll: { dismissAllToolbarNotifications(in: notificationGroups) }
-          )
-        }
+        canvasToolbarContent(
+          notificationGroups: notificationGroups,
+          unseenNotificationWorktreeCount: unseenNotificationWorktreeCount,
+          isUpdateAvailable: state.updates.isUpdateAvailable,
+          availableUpdateVersion: state.updates.availableVersion
+        )
       } else if hasActiveTerminalTarget,
         let toolbarState = toolbarState(
           input: ToolbarStateInput(
@@ -80,7 +83,9 @@ struct WorktreeDetailView: View {
             showExtras: commandKeyObserver.isPressed,
             runScriptEnabled: runScriptEnabled,
             runScriptIsRunning: runScriptIsRunning,
-            customCommands: customCommands
+            customCommands: customCommands,
+            isUpdateAvailable: state.updates.isUpdateAvailable,
+            availableUpdateVersion: state.updates.availableVersion
           )
         )
       {
@@ -107,7 +112,8 @@ struct WorktreeDetailView: View {
           onStopRunScript: { store.send(.stopRunScript) },
           onRunCustomCommand: { index in
             store.send(.runCustomCommand(index))
-          }
+          },
+          onCheckForUpdates: { store.send(.updates(.checkForUpdates)) }
         )
       }
     }
@@ -118,6 +124,28 @@ struct WorktreeDetailView: View {
       runScriptIsRunning: runScriptIsRunning
     )
     return applyFocusedActions(content: content, actions: actions)
+  }
+
+  @ToolbarContentBuilder
+  private func canvasToolbarContent(
+    notificationGroups: [ToolbarNotificationRepositoryGroup],
+    unseenNotificationWorktreeCount: Int,
+    isUpdateAvailable: Bool,
+    availableUpdateVersion: String?
+  ) -> some ToolbarContent {
+    ToolbarItemGroup(placement: .primaryAction) {
+      ToolbarNotificationsPopoverButton(
+        groups: notificationGroups,
+        unseenWorktreeCount: unseenNotificationWorktreeCount,
+        onSelectNotification: selectToolbarNotification,
+        onDismissAll: { dismissAllToolbarNotifications(in: notificationGroups) }
+      )
+      if isUpdateAvailable {
+        ToolbarUpdateButton(availableVersion: availableUpdateVersion) {
+          store.send(.updates(.checkForUpdates))
+        }
+      }
+    }
   }
 
   private func toolbarState(input: ToolbarStateInput) -> WorktreeToolbarState? {
@@ -140,13 +168,16 @@ struct WorktreeDetailView: View {
       title: title,
       statusToast: input.repositories.statusToast,
       pullRequest: matchesBranch ? pullRequest : nil,
+      codeHost: input.repositories.codeHost(forWorktreeID: input.selectedWorktree?.id),
       notificationGroups: input.notificationGroups,
       unseenNotificationWorktreeCount: input.unseenNotificationWorktreeCount,
       openActionSelection: input.openActionSelection,
       showExtras: input.showExtras,
       runScriptEnabled: input.runScriptEnabled,
       runScriptIsRunning: input.runScriptIsRunning,
-      customCommands: input.customCommands
+      customCommands: input.customCommands,
+      isUpdateAvailable: input.isUpdateAvailable,
+      availableUpdateVersion: input.availableUpdateVersion
     )
   }
 
@@ -193,9 +224,17 @@ struct WorktreeDetailView: View {
     if repositories.isShowingCanvas {
       CanvasView(
         terminalManager: terminalManager,
+        repositoryCustomTitles: repositories.repositoryCustomTitles,
         onExitToTab: {
           store.send(.repositories(.toggleCanvas))
         })
+    } else if repositories.isShowingShelf {
+      ShelfView(
+        store: store.scope(state: \.repositories, action: \.repositories),
+        terminalManager: terminalManager,
+        createTab: { store.send(.newTerminal) }
+      )
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
     } else if repositories.isShowingArchivedWorktrees {
       ArchivedWorktreesDetailView(
         store: store.scope(state: \.repositories, action: \.repositories)
@@ -225,7 +264,10 @@ struct WorktreeDetailView: View {
         }
       }
     } else if let selectedRepository = repositories.selectedRepository {
-      RepositoryDetailView(repository: selectedRepository)
+      RepositoryDetailView(
+        repository: selectedRepository,
+        customTitle: repositories.repositoryCustomTitles[selectedRepository.id]
+      )
     } else {
       EmptyStateView(store: store.scope(state: \.repositories, action: \.repositories))
     }
@@ -238,8 +280,8 @@ struct WorktreeDetailView: View {
     content
       .focusedSceneValue(\.openSelectedWorktreeAction, actions.openSelectedWorktree)
       .focusedSceneValue(\.newTerminalAction, actions.newTerminal)
-      .focusedValue(\.closeTabAction, actions.closeTab)
-      .focusedValue(\.closeSurfaceAction, actions.closeSurface)
+      .focusedSceneValue(\.closeTabAction, actions.closeTab)
+      .focusedSceneValue(\.closeSurfaceAction, actions.closeSurface)
       .focusedSceneValue(\.resetFontSizeAction, actions.resetFontSize)
       .focusedSceneValue(\.increaseFontSizeAction, actions.increaseFontSize)
       .focusedSceneValue(\.decreaseFontSizeAction, actions.decreaseFontSize)
@@ -311,11 +353,47 @@ struct WorktreeDetailView: View {
       }
     }
 
+    func closeTabAction() -> (() -> Void)? {
+      if repositories.isShowingCanvas {
+        guard let worktreeID = terminalManager.canvasFocusedWorktreeID,
+          let state = terminalManager.stateIfExists(for: worktreeID),
+          state.canCloseFocusedTab
+        else {
+          return nil
+        }
+        return { _ = state.closeFocusedTab() }
+      }
+      guard hasActiveWorktree, let selectedWorktree = repositories.selectedTerminalWorktree,
+        terminalManager.stateIfExists(for: selectedWorktree.id)?.canCloseFocusedTab == true
+      else {
+        return nil
+      }
+      return { store.send(.closeTab) }
+    }
+
+    func closeSurfaceAction() -> (() -> Void)? {
+      if repositories.isShowingCanvas {
+        guard let worktreeID = terminalManager.canvasFocusedWorktreeID,
+          let state = terminalManager.stateIfExists(for: worktreeID),
+          state.canCloseFocusedSurface
+        else {
+          return nil
+        }
+        return { _ = state.closeFocusedSurface() }
+      }
+      guard hasActiveWorktree, let selectedWorktree = repositories.selectedTerminalWorktree,
+        terminalManager.stateIfExists(for: selectedWorktree.id)?.canCloseFocusedSurface == true
+      else {
+        return nil
+      }
+      return { store.send(.closeSurface) }
+    }
+
     return FocusedActions(
       openSelectedWorktree: action(.openSelectedWorktree),
       newTerminal: action(.newTerminal),
-      closeTab: canvasAction { $0.closeFocusedTab() } ?? action(.closeTab),
-      closeSurface: canvasAction { $0.closeFocusedSurface() } ?? action(.closeSurface),
+      closeTab: closeTabAction(),
+      closeSurface: closeSurfaceAction(),
       resetFontSize: fontSizeAction("reset_font_size"),
       increaseFontSize: fontSizeAction("increase_font_size:1"),
       decreaseFontSize: fontSizeAction("decrease_font_size:1"),
@@ -384,6 +462,7 @@ struct WorktreeDetailView: View {
     let title: DetailToolbarTitle
     let statusToast: RepositoriesFeature.StatusToast?
     let pullRequest: GithubPullRequest?
+    let codeHost: CodeHost
     let notificationGroups: [ToolbarNotificationRepositoryGroup]
     let unseenNotificationWorktreeCount: Int
     let openActionSelection: OpenWorktreeAction
@@ -391,6 +470,8 @@ struct WorktreeDetailView: View {
     let runScriptEnabled: Bool
     let runScriptIsRunning: Bool
     let customCommands: [UserCustomCommand]
+    let isUpdateAvailable: Bool
+    let availableUpdateVersion: String?
   }
 
   fileprivate struct WorktreeToolbarContent: ToolbarContent {
@@ -404,6 +485,7 @@ struct WorktreeDetailView: View {
     let onRunScript: () -> Void
     let onStopRunScript: () -> Void
     let onRunCustomCommand: (Int) -> Void
+    let onCheckForUpdates: () -> Void
     @Environment(\.resolvedKeybindings) private var resolvedKeybindings
 
     var body: some ToolbarContent {
@@ -419,7 +501,8 @@ struct WorktreeDetailView: View {
       ToolbarItemGroup {
         ToolbarStatusView(
           toast: toolbarState.statusToast,
-          pullRequest: toolbarState.pullRequest
+          pullRequest: toolbarState.pullRequest,
+          codeHost: toolbarState.codeHost
         )
         .padding(.horizontal)
       }
@@ -432,6 +515,12 @@ struct WorktreeDetailView: View {
           onSelectNotification: onSelectNotification,
           onDismissAll: onDismissAllNotifications
         )
+        if toolbarState.isUpdateAvailable {
+          ToolbarUpdateButton(
+            availableVersion: toolbarState.availableUpdateVersion,
+            onCheckForUpdates: onCheckForUpdates
+          )
+        }
       }
 
       ToolbarSpacer(.flexible)
@@ -579,11 +668,13 @@ struct WorktreeDetailView: View {
   ) -> WorktreeLoadingInfo? {
     guard let selectedRow else { return nil }
     let repositoryName = repositories.repositoryName(for: selectedRow.repositoryID)
+    let isFolder = repositories.repositories[id: selectedRow.repositoryID]?.kind == .plain
     if selectedRow.isDeleting {
       return WorktreeLoadingInfo(
         name: selectedRow.name,
         repositoryName: repositoryName,
         state: .removing,
+        isFolder: isFolder,
         statusTitle: nil,
         statusDetail: nil,
         statusCommand: nil,
@@ -848,6 +939,7 @@ private struct WorktreeToolbarPreview: View {
       title: DetailToolbarTitle(kind: .branch(name: "feature/toolbar-preview")),
       statusToast: nil,
       pullRequest: nil,
+      codeHost: .github,
       notificationGroups: [],
       unseenNotificationWorktreeCount: 0,
       openActionSelection: .finder,
@@ -864,8 +956,10 @@ private struct WorktreeToolbarPreview: View {
             key: "u",
             modifiers: UserCustomShortcutModifiers()
           )
-        ),
-      ]
+        )
+      ],
+      isUpdateAvailable: true,
+      availableUpdateVersion: "2026.5.1"
     )
     let observer = CommandKeyObserver()
     observer.isPressed = false
@@ -888,7 +982,8 @@ private struct WorktreeToolbarPreview: View {
         onDismissAllNotifications: {},
         onRunScript: {},
         onStopRunScript: {},
-        onRunCustomCommand: { _ in }
+        onRunCustomCommand: { _ in },
+        onCheckForUpdates: {}
       )
     }
     .environment(commandKeyObserver)

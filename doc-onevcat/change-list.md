@@ -1,4 +1,117 @@
-### Change content
+# Fork Change Log
+
+## Upstream Baseline
+
+| Key | Value |
+| --- | --- |
+| Commit | `5e88ec5dfc74af165781e8d5a41505867b23dc06` |
+| Tag | post-v0.8.5 |
+| Date | 2026-05-05 |
+
+All upstream changes up to and including this commit have been reviewed.
+Future upstream checks should only inspect commits **after** this baseline.
+
+---
+
+## 2026-05-09 — Ghostty fork patch
+
+- Created `onevcat/ghostty` fork branch `release/v1.3.1-patched` from upstream tag `v1.3.1`.
+- Added fork-only embedded C API `ghostty_surface_pid(ghostty_surface_t)` for per-pane agent process detection.
+- Prowl submodule now tracks the patched fork branch. Upgrade procedure is documented in
+  `doc-onevcat/fork-sync-ghostty.md`.
+
+---
+
+## 2026-05-08 — Review through post-v0.8.5
+
+### Upstream changes reviewed
+
+Reviewed 25 commits on `supabitapp/supacode` from `c4e9be3b` (v0.8.1, 2026-04-19) through
+`5e88ec5d` (post-v0.8.5, 2026-05-05). Significant additions:
+
+- **Ghostty key event routing** (`6c807c63`, #259; `539c0feb`, #264) — upstream fixed two
+  `performKeyEquivalent` edge cases: only forward unmatched Ghostty bindings to a real main-menu item, and only
+  consume keys from the actual first responder.
+- **Repository and PR targeting** (`a4cdad9e`, #261) — resolves the GitHub PR owner/repo with `gh repo view`, which
+  matters for fork clones whose remotes may point at different owners.
+- **Notification, tab, focus, and window UX** (`072ad1e7`, #266; `6615f49c`, #269; `b34a66d5`, #279;
+  `71dc4b57`, #295; `028ef412`, #297; `5e88ec5d`, #298) — upstream added jump-to-unread notifications,
+  custom tab titles, worktree history, sidebar-to-terminal arrow focus, dynamic window titles, and main-window-only
+  quit confirmation.
+- **Sidebar/repository appearance and polish** (`4d19b068`, #260; `9bae228e`, #276; `3af3a164`, #258;
+  `57e620a7`, #265; `514c3ceb`, #283) — dim inactive split panes, per-repo title/color, detail toolbar and loading
+  state polish, sidebar animation CPU reductions, and script menu cache fixes.
+- **Agent/editor/platform additions** (`943f3fab`, #245; `6fff0218`, #262; `650a6b52`, #292; `e06c07a0`) —
+  Kiro and Pi agents, Android Studio editor support, and app icon bundle metadata.
+- **Build/release housekeeping** (`92c7c461`, `644bd468`, `3b07571b`, `34da9417`, `bd9da925`, `4a8611d9`) —
+  CI concurrency and upstream semantic version/build-number bumps.
+
+### Decisions
+
+- **Ported to Prowl PRs**: Ghostty key routing (#255), fork-aware PR repo resolution (#256), worktree history
+  (#260), dynamic window title plus main-window quit behavior (#261), loading overlay polish (#262), sidebar animation
+  CPU fix (#263), Android Studio editor support (#264), sidebar right-arrow focus (#265), test workflow concurrency
+  (#266), and `CFBundleIconName` metadata (#267).
+- **Reviewed and skipped**: Notifications UX (#266 upstream), inactive split dimming (#260 upstream), tab renaming
+  (#269 upstream), and bare-repo detection (#263 upstream) were already covered, intentionally different, or not
+  currently applicable in the fork.
+- **Skipped due fork-specific architecture**: Repository title/color (#276 upstream) conflicts with Prowl's richer
+  repository appearance model; Kiro/Pi agent hooks rely on upstream settings/hook modules not present in this fork;
+  Run Script dropdown caching does not apply to Prowl's current popover/button implementation.
+- **Skipped due fork release policy**: Upstream release-tip/warm-cache/inspect-dependencies workflow concurrency and
+  semantic version bumps do not apply. Prowl keeps local, notarized, date-based releases.
+
+---
+
+## 2026-04-20 — Review through v0.8.1
+
+### Upstream changes reviewed
+
+Reviewed 47 commits on `supabitapp/supacode` from `0150ceaf` (v0.8.0) through `c4e9be3b` (v0.8.1, 2026-04-19). Significant additions:
+
+- **Tuist migration** (`02d75cd5` + ~20 follow-ups) — upstream replaced the checked-in Xcode project with a generated Tuist workspace. Driven by a `release-tip` archive regression (the new `supacode-cli` Xcode target archived with `SKIP_INSTALL = NO`, polluting archives with `Products/usr/local/bin/supacode` and breaking `developer-id` export) plus configuration sprawl across pbxproj, Makefile, CI workflows, and in-source `sed` patching of Sentry/PostHog keys in `supacodeApp.swift`.
+- **CLI tool** (`e57d744d`, #227) — Unix-socket CLI `supacode` with `open`/`worktree`/`tab`/`surface`/`repo`/`settings`/`socket` subcommands. Orchestration-focused, dispatches via deeplink URLs.
+- **Script CLI + deeplinks** (`788dcff4` #253, `1f38a0c1` #246) — multi-script per repo, `worktree run --script UUID`, `worktree script list`.
+- **Folder (non-git) repo support** (`68e44966`, #257); atomic `sidebar.json` state (`7981cf34`, #254); Icon Composer app icon for macOS 26 Liquid Glass (`f37b698f`, #230).
+- **Ghostty `toggle-background-opacity`** (`1792e377`, #225) — same feature fork already implements via `5ca2bf4e` (2026-03-21, 3 weeks earlier).
+- Misc Ghostty fixes and editor integrations (RubyMine #248, surface width #233, local URL paths #236, split-preserve-zoom #241, openFinder→openWorktree rename #247).
+
+### Decisions
+
+- **Tuist migration**: **Skip.** Fork sidesteps the `release-tip` archive bug by construction — `ProwlCLI` is a SwiftPM `executableTarget`, not an Xcode target, and is pre-copied into `Resources/prowl-cli/` as a folder reference. Archives already contain only `Products/Applications/supacode.app`; `/usr/local/bin/prowl` symlinks into `/Applications/Prowl.app/Contents/Resources/prowl-cli/prowl`. Migrating would force rewriting the `/release` skill, notarization flow, appcast generation, and every rebrand patch for zero functional gain.
+- **CLI (#227, #253, #246)**: **Skip.** Fork's `prowl` CLI targets agent scripting (`send`/`key`/`read` with stdin piping, output capture, timeout, keyboard token synthesis); upstream's CLI targets orchestration (`worktree archive/pin/delete`, `tab/surface new/split/close`, `repo`/`settings`/`socket`). The two are orthogonal, not duplicative. Future work may selectively port upstream's orchestration commands into `ProwlCLI`'s envelope-based transport, but nothing forces action today.
+- **Ghostty `#225`**: **Defer to next sync of the affected files.** Upstream version is slightly cleaner — state on `GhosttyRuntime` instead of per-view (fixes multi-split-same-window ambiguity), reset on config reload, early-return in fullscreen, Bool return, debug logs. No user-visible bug in fork. When next editing `GhosttySurfaceView.swift` / `GhosttySurfaceBridge.swift` / `GhosttyRuntime.swift`, replace fork's implementation with upstream's and preserve the fork-only `chromeBackgroundColor(...)` call in `applyWindowBackgroundAppearance`.
+- **Everything else**: Nothing user-facing for the fork. Re-evaluate on next review.
+
+---
+
+## 2026-04-08 — Full upstream review & change-list format migration
+
+### Upstream changes reviewed
+
+Reviewed all upstream (`supabitapp/supacode`) commits from our last sync through `0150ceaf` (v0.8.0). Key additions:
+
+- **Deeplinks** (`a7f6d81f`) — new deeplink handling
+- **Coding agent hook system** (`61356be1`) — hooks for Claude Code and Codex
+- **Auto-hide tab bar for tmux** (`dc8eb02e`) — new setting
+- **Inhibit command on script & single-tab bar hiding** (`301cf398`)
+- **Auto-delete archived worktrees** (`666d440d`) — configurable retention period
+- **Terminal layout persistence and restoration** (`771e4aab`)
+- **Global worktree settings** (`c29ee5a5`) — global defaults with per-repo overrides
+- **Merged worktree action picker** (`4db25220`) — replaces auto-archive toggle
+- **Global defaults for copy flags and merge strategy** (`ce214902`) — overlaps with our #178
+
+### Decisions
+
+- **#178 (global defaults)**: Upstream added `ce214902` which covers global defaults for copy flags and merge strategy. Our fork branch `feat/issue-178-global-defaults` (`c7a10bd0`) implements the same concept. On next upstream sync, check for conflicts and prefer upstream's implementation where equivalent; keep fork extensions if any.
+- **#173, #177**: Both PRs already merged.
+- **change-list.md format**: This file is no longer maintained as a per-commit tracking table. It is now a dated log of upstream reviews and fork decisions. Use the `/check-upstream-changes` command to generate diffs against the baseline.
+
+---
+
+## Old Log
+
+The table below was the original per-commit tracking format, preserved for reference.
 
 | summary | commit hash | status |
 | --- | --- | --- |

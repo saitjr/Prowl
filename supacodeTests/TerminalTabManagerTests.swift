@@ -4,6 +4,50 @@ import Testing
 
 @MainActor
 struct TerminalTabManagerTests {
+  @Test func customTitleOverridesDisplayTitleWithoutFreezingLiveTitle() {
+    let manager = TerminalTabManager()
+    let tabId = manager.createTab(title: "shell", icon: nil)
+
+    manager.setCustomTitle(tabId, title: "  build  ")
+    manager.updateTitle(tabId, title: "npm test")
+
+    #expect(manager.tabs.first?.title == "npm test")
+    #expect(manager.tabs.first?.customTitle == "build")
+    #expect(manager.tabs.first?.displayTitle == "build")
+  }
+
+  @Test func clearingCustomTitleRestoresLiveShellTitle() {
+    let manager = TerminalTabManager()
+    let tabId = manager.createTab(title: "shell", icon: nil)
+
+    manager.setCustomTitle(tabId, title: "build")
+    manager.updateTitle(tabId, title: "npm test")
+    manager.setCustomTitle(tabId, title: "   ")
+
+    #expect(manager.tabs.first?.customTitle == nil)
+    #expect(manager.tabs.first?.displayTitle == "npm test")
+  }
+
+  @Test func customTitleIgnoresLockedTabs() {
+    let manager = TerminalTabManager()
+    let tabId = manager.createTab(title: "RUN SCRIPT", icon: "play.fill", isTitleLocked: true)
+
+    manager.setCustomTitle(tabId, title: "build")
+
+    #expect(manager.tabs.first?.customTitle == nil)
+    #expect(manager.tabs.first?.displayTitle == "RUN SCRIPT")
+  }
+
+  @Test func editingTabIDIsDroppedWhenTabCloses() {
+    let manager = TerminalTabManager()
+    let tabId = manager.createTab(title: "one", icon: nil)
+
+    manager.beginTabRename(tabId)
+    manager.closeTab(tabId)
+
+    #expect(manager.editingTabID == nil)
+  }
+
   @Test func createTabInsertsAfterSelection() {
     let manager = TerminalTabManager()
     let first = manager.createTab(title: "one", icon: nil)
@@ -62,5 +106,75 @@ struct TerminalTabManagerTests {
     #expect(manager.tabs.first?.isDirty == true)
     manager.updateDirty(tabId, isDirty: false)
     #expect(manager.tabs.first?.isDirty == false)
+  }
+
+  @Test func overrideIconLocksAndSetsIcon() {
+    let manager = TerminalTabManager()
+    let tabId = manager.createTab(title: "one", icon: "terminal")
+    manager.overrideIcon(tabId, icon: "sparkles")
+    #expect(manager.tabs.first?.icon == "sparkles")
+    #expect(manager.tabs.first?.iconLock == .user)
+  }
+
+  @Test func updateIconRespectsLock() {
+    let manager = TerminalTabManager()
+    let tabId = manager.createTab(title: "one", icon: "terminal")
+    manager.overrideIcon(tabId, icon: "sparkles")
+    manager.updateIcon(tabId, icon: "terminal")
+    #expect(manager.tabs.first?.icon == "sparkles")
+  }
+
+  @Test func clearIconOverrideUnlocksIcon() {
+    let manager = TerminalTabManager()
+    let tabId = manager.createTab(title: "one", icon: "terminal")
+    manager.overrideIcon(tabId, icon: "sparkles")
+    manager.clearIconOverride(tabId)
+    #expect(manager.tabs.first?.iconLock == .auto)
+    manager.updateIcon(tabId, icon: "play.fill")
+    #expect(manager.tabs.first?.icon == "play.fill")
+  }
+
+  @Test func setScriptIconAppliesAndFlags() {
+    let manager = TerminalTabManager()
+    let tabId = manager.createTab(title: "one", icon: "terminal")
+    manager.setScriptIcon(tabId, icon: "play.fill")
+    #expect(manager.tabs.first?.icon == "play.fill")
+    #expect(manager.tabs.first?.iconLock == .script)
+  }
+
+  @Test func updateIconYieldsToScriptLock() {
+    let manager = TerminalTabManager()
+    let tabId = manager.createTab(title: "one", icon: "terminal")
+    manager.setScriptIcon(tabId, icon: "play.fill")
+    manager.updateIcon(tabId, icon: "@asset:Npm")
+    #expect(manager.tabs.first?.icon == "play.fill")
+  }
+
+  @Test func userOverrideSupersedesScriptLock() {
+    let manager = TerminalTabManager()
+    let tabId = manager.createTab(title: "one", icon: "terminal")
+    manager.setScriptIcon(tabId, icon: "play.fill")
+    manager.overrideIcon(tabId, icon: "sparkles")
+    #expect(manager.tabs.first?.icon == "sparkles")
+    #expect(manager.tabs.first?.iconLock == .user)
+  }
+
+  @Test func setScriptIconYieldsToUserLock() {
+    let manager = TerminalTabManager()
+    let tabId = manager.createTab(title: "one", icon: "terminal")
+    manager.overrideIcon(tabId, icon: "sparkles")
+    manager.setScriptIcon(tabId, icon: "play.fill")
+    #expect(manager.tabs.first?.icon == "sparkles")
+    #expect(manager.tabs.first?.iconLock == .user)
+  }
+
+  @Test func clearIconOverrideReleasesScriptLock() {
+    let manager = TerminalTabManager()
+    let tabId = manager.createTab(title: "one", icon: "terminal")
+    manager.setScriptIcon(tabId, icon: "play.fill")
+    manager.clearIconOverride(tabId)
+    #expect(manager.tabs.first?.iconLock == .auto)
+    manager.updateIcon(tabId, icon: "@asset:Npm")
+    #expect(manager.tabs.first?.icon == "@asset:Npm")
   }
 }
