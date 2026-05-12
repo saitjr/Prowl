@@ -32,8 +32,8 @@ PROWL_POSTHOG_HOST ?=
 
 # Tooling wrappers. (Requires mise.)
 MISE_ZIG = mise exec zig@0.15.2 --
-MISE_XCSIFT = mise exec github:ldomaradzki/xcsift@1.1.3 --
 MISE_SWIFTLINT = mise exec swiftlint@0.62.2 --
+XCODEBUILD_FILTER = bash "$(CURRENT_MAKEFILE_DIR)/scripts/xcodebuild-output-filter.sh"
 .DEFAULT_GOAL := help
 .PHONY: build-ghostty-xcframework ensure-ghostty sync-ghostty _check-ghostty-hash _record-ghostty-hash build-app build-cli build-cli-release embed-cli-debug embed-cli run-app install-dev-build install-release archive export-archive format format-changed format-lint lint check test test-cli-smoke test-cli-integration bump-version bump-and-release log-stream
 
@@ -98,7 +98,7 @@ sync-ghostty: # Force sync GhosttyKit to current submodule HEAD (always rebuilds
 	@echo "Done. Xcode module cache cleared for fresh compilation."
 
 build-app: ensure-ghostty embed-cli-debug # Build the macOS app (Debug)
-	bash -o pipefail -c 'xcodebuild -project supacode.xcodeproj -scheme supacode -configuration Debug -derivedDataPath $(DEBUG_DERIVED_DATA_DIR) build -skipMacroValidation -clonedSourcePackagesDirPath $(SPM_CACHE_DIR) 2>&1 | $(MISE_XCSIFT) xcsift -qw --format toon'
+	bash -o pipefail -c 'xcodebuild -project supacode.xcodeproj -scheme supacode -configuration Debug -derivedDataPath $(DEBUG_DERIVED_DATA_DIR) build -skipMacroValidation -clonedSourcePackagesDirPath $(SPM_CACHE_DIR) 2>&1 | $(XCODEBUILD_FILTER) -qw --format toon'
 
 sync-cli-version: # Sync app MARKETING_VERSION into ProwlCLIShared/ProwlVersion.swift
 	@version="$$(/usr/bin/awk -F' = ' '/MARKETING_VERSION = [0-9.]*;/{gsub(/;/,"",$$2);print $$2; exit}' \
@@ -277,10 +277,10 @@ install-release: build-ghostty-xcframework # Build Release, sign locally, instal
 	echo "installed $$DST (Release build, locally signed)"
 
 archive: build-ghostty-xcframework embed-cli # Archive Release build for distribution
-	bash -o pipefail -c 'xcodebuild -project supacode.xcodeproj -scheme supacode -configuration Release -archivePath build/supacode.xcarchive archive CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="$$APPLE_TEAM_ID" CODE_SIGN_IDENTITY="$$DEVELOPER_ID_IDENTITY_SHA" OTHER_CODE_SIGN_FLAGS="--timestamp" PROWL_SENTRY_DSN="$(PROWL_SENTRY_DSN)" PROWL_POSTHOG_API_KEY="$(PROWL_POSTHOG_API_KEY)" PROWL_POSTHOG_HOST="$(PROWL_POSTHOG_HOST)" -skipMacroValidation -clonedSourcePackagesDirPath $(SPM_CACHE_DIR) $(XCODEBUILD_FLAGS) 2>&1 | $(MISE_XCSIFT) xcsift -qw --format toon'
+	bash -o pipefail -c 'xcodebuild -project supacode.xcodeproj -scheme supacode -configuration Release -archivePath build/supacode.xcarchive archive CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="$$APPLE_TEAM_ID" CODE_SIGN_IDENTITY="$$DEVELOPER_ID_IDENTITY_SHA" OTHER_CODE_SIGN_FLAGS="--timestamp" PROWL_SENTRY_DSN="$(PROWL_SENTRY_DSN)" PROWL_POSTHOG_API_KEY="$(PROWL_POSTHOG_API_KEY)" PROWL_POSTHOG_HOST="$(PROWL_POSTHOG_HOST)" -skipMacroValidation -clonedSourcePackagesDirPath $(SPM_CACHE_DIR) $(XCODEBUILD_FLAGS) 2>&1 | $(XCODEBUILD_FILTER) -qw --format toon'
 
 export-archive: # Export xarchive
-	bash -o pipefail -c 'xcodebuild -exportArchive -archivePath build/supacode.xcarchive -exportPath build/export -exportOptionsPlist build/ExportOptions.plist 2>&1 | $(MISE_XCSIFT) xcsift -qw --format toon'
+	bash -o pipefail -c 'xcodebuild -exportArchive -archivePath build/supacode.xcarchive -exportPath build/export -exportOptionsPlist build/ExportOptions.plist 2>&1 | $(XCODEBUILD_FILTER) -qw --format toon'
 
 test: ensure-ghostty
 	@set -euo pipefail; \
@@ -288,7 +288,7 @@ test: ensure-ghostty
 	mkdir -p "$$(dirname "$$result_bundle")"; \
 	rm -rf "$$result_bundle"; \
 	set +e; \
-	xcodebuild test -project supacode.xcodeproj -scheme supacode -destination "platform=macOS" -derivedDataPath $(TEST_DERIVED_DATA_DIR) -resultBundlePath "$$result_bundle" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" -skipMacroValidation -clonedSourcePackagesDirPath $(SPM_CACHE_DIR) 2>&1 | $(MISE_XCSIFT) xcsift -w --format toon; \
+	xcodebuild test -project supacode.xcodeproj -scheme supacode -destination "platform=macOS" -derivedDataPath $(TEST_DERIVED_DATA_DIR) -resultBundlePath "$$result_bundle" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" -skipMacroValidation -clonedSourcePackagesDirPath $(SPM_CACHE_DIR) 2>&1 | $(XCODEBUILD_FILTER) -w --format toon; \
 	xcodebuild_status=$${PIPESTATUS[0]}; \
 	set -e; \
 	if [ "$$xcodebuild_status" -ne 0 ]; then \

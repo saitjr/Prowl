@@ -35,7 +35,7 @@ nonisolated struct HotkeyWindowSettings: Codable, Equatable, Sendable {
     widthRatio: Double,
     heightRatio: Double,
     minimumWidth: Double = Self.defaultMinimumWidth,
-    minimumHeight: Double = Self.defaultMinimumHeight
+    minimumHeight: Double = Self.defaultMinimumHeight,
     hideOnApplicationDeactivate: Bool = true
   ) {
     self.isEnabled = isEnabled

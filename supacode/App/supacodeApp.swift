@@ -620,7 +620,7 @@ struct SupacodeApp: App {
 
   private static func bringMainWindowToFront() -> Bool {
     HotkeyWindowManager.shared.hideIfVisible()
-    NSApplication.shared.surfaceMainWindow()
+    return NSApplication.shared.surfaceMainWindow()
   }
 
   var body: some Scene {
