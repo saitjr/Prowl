@@ -58,13 +58,13 @@ final class GhosttySurfaceBridge {
 
   func childPID() -> pid_t? {
     guard let surface else { return nil }
-    guard let pid = ghosttySurfacePID(surface) else { return nil }
+    let pid = ghostty_surface_pid(surface)
     return pid > 0 ? pid_t(pid) : nil
   }
 
   func foregroundProcessGroupID() -> pid_t? {
     guard let surface else { return nil }
-    guard let processGroupID = ghosttySurfaceForegroundProcessGroup(surface) else { return nil }
+    let processGroupID = ghostty_surface_foreground_process_group(surface)
     return processGroupID > 0 ? pid_t(processGroupID) : nil
   }
 
@@ -490,33 +490,5 @@ final class GhosttySurfaceBridge {
 
   private func string(from pointer: UnsafePointer<CChar>?, length: UInt64) -> String? {
     string(from: pointer, length: Int(length))
-  }
-
-  private typealias GhosttySurfacePIDFunction = @convention(c) (ghostty_surface_t?) -> Int32
-  private typealias GhosttySurfaceForegroundProcessGroupFunction = @convention(c) (ghostty_surface_t?) -> Int32
-
-  private func ghosttySurfacePID(_ surface: ghostty_surface_t?) -> Int32? {
-    guard let function = Self.loadGhosttySymbol(
-      named: "ghostty_surface_pid",
-      as: GhosttySurfacePIDFunction.self
-    ) else {
-      return nil
-    }
-    return function(surface)
-  }
-
-  private func ghosttySurfaceForegroundProcessGroup(_ surface: ghostty_surface_t?) -> Int32? {
-    guard let function = Self.loadGhosttySymbol(
-      named: "ghostty_surface_foreground_process_group",
-      as: GhosttySurfaceForegroundProcessGroupFunction.self
-    ) else {
-      return nil
-    }
-    return function(surface)
-  }
-
-  private static func loadGhosttySymbol<T>(named name: StaticString, as _: T.Type) -> T? {
-    guard let symbol = dlsym(nil, "\(name)") else { return nil }
-    return unsafeBitCast(symbol, to: T.self)
   }
 }
