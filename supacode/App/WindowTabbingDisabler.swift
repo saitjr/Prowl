@@ -7,18 +7,24 @@ struct WindowTabbingDisabler: NSViewRepresentable {
   }
 
   func updateNSView(_ nsView: WindowTabbingView, context: Context) {
-    nsView.disallowTabbing()
+    nsView.refreshWindowConfigurationIfNeeded()
   }
 }
 
 final class WindowTabbingView: NSView, NSWindowDelegate {
+  private weak var configuredWindow: NSWindow?
+  private var isSchedulingSanitization = false
+
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
-    disallowTabbing()
+    refreshWindowConfigurationIfNeeded()
   }
 
-  func disallowTabbing() {
+  func refreshWindowConfigurationIfNeeded() {
     guard let window else { return }
+    guard configuredWindow !== window else { return }
+    configuredWindow = window
+
     if window.tabbingMode != .disallowed {
       window.tabbingMode = .disallowed
     }
@@ -27,10 +33,10 @@ final class WindowTabbingView: NSView, NSWindowDelegate {
       window.identifier = mainIdentifier
     }
     window.isExcludedFromWindowsMenu = true
-    WindowFrameAutosaveSanitizer.sanitizeAttachedWindow(window)
     if window.delegate !== self {
       window.delegate = self
     }
+    scheduleSanitization()
   }
 
   func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -39,12 +45,21 @@ final class WindowTabbingView: NSView, NSWindowDelegate {
   }
 
   func windowDidResize(_ notification: Notification) {
-    guard let window else { return }
-    WindowFrameAutosaveSanitizer.sanitizeAttachedWindow(window)
+    scheduleSanitization()
   }
 
   func windowDidChangeScreen(_ notification: Notification) {
-    guard let window else { return }
-    WindowFrameAutosaveSanitizer.sanitizeAttachedWindow(window)
+    scheduleSanitization()
+  }
+
+  private func scheduleSanitization() {
+    guard !isSchedulingSanitization else { return }
+    isSchedulingSanitization = true
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      self.isSchedulingSanitization = false
+      guard let window = self.window else { return }
+      WindowFrameAutosaveSanitizer.sanitizeAttachedWindow(window)
+    }
   }
 }
