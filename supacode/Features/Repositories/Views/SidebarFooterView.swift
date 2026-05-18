@@ -37,9 +37,7 @@ struct SidebarFooterView: View {
       .help("Help")
       Spacer()
       Button {
-        withAnimation(.easeOut(duration: 0.18)) {
-          _ = store.send(.activeAgents(.togglePanelVisibility))
-        }
+        _ = store.send(.activeAgents(.togglePanelVisibility))
       } label: {
         Image(systemName: Self.activeAgentsPanelIconName(isPanelHidden: store.state.activeAgents.isPanelHidden))
           .accessibilityLabel(store.state.activeAgents.isPanelHidden ? "Show Active Agents" : "Hide Active Agents")

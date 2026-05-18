@@ -16,6 +16,11 @@ final class HotkeyWindowManager {
     let minSize: CGSize
   }
 
+  private static let fallbackMainWindowMinimumSize = CGSize(
+    width: HotkeyWindowSettings.defaultMinimumWidth,
+    height: HotkeyWindowSettings.defaultMinimumHeight
+  )
+
   static let shared = HotkeyWindowManager()
 
   private let workspaceNotificationCenter: NotificationCenter
@@ -77,9 +82,12 @@ final class HotkeyWindowManager {
       logger.warning("Unable to resolve main window for hotkey presentation")
       return
     }
+    normalizeMainWindowBeforeHotkeyPresentation(window)
 
     snapshot = MainWindowSnapshot(
-      frame: snapshot?.frame ?? window.frame,
+      // Always capture the current non-hotkey frame so restoration does not
+      // drift to a stale, previously persisted size.
+      frame: clampedMainWindowFrame(window.frame, minimumSize: minimumMainWindowSize(for: window)),
       level: window.level,
       collectionBehavior: window.collectionBehavior,
       animationBehavior: window.animationBehavior,
@@ -122,6 +130,7 @@ final class HotkeyWindowManager {
       window.orderOut(nil)
       restoreMainWindowPresentation(on: window)
     }
+    snapshot = nil
     clearWindowObservation()
   }
 
@@ -133,15 +142,76 @@ final class HotkeyWindowManager {
 
   private func restoreMainWindowPresentation(on window: NSWindow) {
     if let snapshot {
+      let minimumSize = minimumMainWindowSize(
+        fromSnapshot: snapshot.minSize,
+        currentWindowMinimumSize: window.minSize
+      )
+      let restoredFrame = clampedMainWindowFrame(snapshot.frame, minimumSize: minimumSize)
       window.level = snapshot.level
       window.collectionBehavior = snapshot.collectionBehavior
       window.animationBehavior = snapshot.animationBehavior
-      window.minSize = snapshot.minSize
-      window.setFrame(snapshot.frame, display: false)
+      window.minSize = minimumSize
+      window.setFrame(restoredFrame, display: false)
     } else {
       window.level = .normal
       window.collectionBehavior = [.managed]
       window.animationBehavior = .default
+      window.minSize = minimumMainWindowSize(for: window)
+    }
+  }
+
+  private func minimumMainWindowSize(for window: NSWindow) -> CGSize {
+    minimumMainWindowSize(
+      fromSnapshot: window.minSize,
+      currentWindowMinimumSize: window.minSize
+    )
+  }
+
+  private func minimumMainWindowSize(
+    fromSnapshot snapshotMinimumSize: CGSize,
+    currentWindowMinimumSize: CGSize
+  ) -> CGSize {
+    CGSize(
+      width: max(
+        Self.fallbackMainWindowMinimumSize.width,
+        snapshotMinimumSize.width,
+        currentWindowMinimumSize.width
+      ),
+      height: max(
+        Self.fallbackMainWindowMinimumSize.height,
+        snapshotMinimumSize.height,
+        currentWindowMinimumSize.height
+      )
+    )
+  }
+
+  private func clampedMainWindowFrame(_ frame: CGRect, minimumSize: CGSize) -> CGRect {
+    var clamped = frame
+    clamped.size.width = max(minimumSize.width, frame.size.width)
+    clamped.size.height = max(minimumSize.height, frame.size.height)
+    return clamped.integral
+  }
+
+  private func normalizeMainWindowBeforeHotkeyPresentation(_ window: NSWindow) {
+    // A previous crash while hotkey mode is active can leave the window in a
+    // floating + tiny state for the next launch. Normalize before snapshotting
+    // so we never persist/restore the transient hotkey geometry as main state.
+    if window.level != .normal {
+      window.level = .normal
+    }
+    if window.collectionBehavior.contains(.fullScreenAuxiliary) || window.collectionBehavior.contains(.moveToActiveSpace)
+    {
+      window.collectionBehavior = [.managed]
+    }
+    if window.animationBehavior != .default {
+      window.animationBehavior = .default
+    }
+
+    let minimumSize = minimumMainWindowSize(for: window)
+    window.minSize = minimumSize
+    let clampedFrame = clampedMainWindowFrame(window.frame, minimumSize: minimumSize)
+    if clampedFrame != window.frame {
+      window.setFrame(clampedFrame, display: false, animate: false)
     }
   }
 

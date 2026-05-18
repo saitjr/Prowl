@@ -39,10 +39,12 @@ struct SidebarListView: View {
   @State private var isDragActive = false
   @State private var draggingRepositoryID: Repository.ID?
   @State private var targetedRepositoryDropDestination: Int?
-  @State private var sidebarHeight = 0.0
-  @State private var sidebarFooterHeight = 0.0
   @State private var resizingPanelHeight: Double?
   @Shared(.repositoryAppearances) private var repositoryAppearances
+
+  private let sidebarTopControlsHeight = 34.0
+  private let sidebarTopControlsSpacing = 6.0
+  private let sidebarFooterReservedHeight = 30.0
 
   var body: some View {
     let state = store.state
@@ -66,66 +68,17 @@ struct SidebarListView: View {
     }
     let pendingSidebarReveal = state.pendingSidebarReveal
 
-    let maximumPanelHeight =
-      sidebarHeight > 0
-      ? ActiveAgentsFeature.maximumPanelHeight(forContainerHeight: sidebarHeight)
-      : ActiveAgentsFeature.maximumPanelHeight
+    let maximumPanelHeight = ActiveAgentsFeature.maximumPanelHeight
     let agentWorktreeMetadata = Self.activeAgentWorktreeMetadata(
       repositories: state.repositories,
       customTitles: state.repositoryCustomTitles,
       repositoryAppearances: repositoryAppearances
     )
     let panelHeight = min(resizingPanelHeight ?? state.activeAgents.panelHeight, maximumPanelHeight)
-    let panelOffset = state.activeAgents.isPanelHidden ? panelHeight : 0
     let activeAgentsPanelTopGap = 4.0
-    let listBottomPadding = state.activeAgents.isPanelHidden ? 0 : panelHeight + activeAgentsPanelTopGap
 
     ScrollViewReader { scrollProxy in
-      ScrollView {
-        LazyVStack(spacing: 0) {
-          if showsRepositoryListHeader {
-            repositoryListHeader(
-              action: repositoryListHeaderAction,
-              expandableRepositoryIDs: expandableRepositoryIDs
-            )
-          }
-
-          if repositoryItems.isEmpty {
-            emptyRepositoryHint()
-          }
-
-          ForEach(Array(repositoryItems.enumerated()), id: \.element.id) { index, item in
-            repositoryItemView(
-              item,
-              index: index,
-              repositoryOrderIDs: presentation.repositoryOrderIDs,
-              hotkeyRows: hotkeyRows,
-              selectedWorktreeIDs: selectedWorktreeIDs
-            )
-          }
-        }
-        .padding(.vertical, 2)
-        .padding(.bottom, listBottomPadding)
-      }
-      .scrollIndicators(.never)
-      .frame(minWidth: 220)
-      .background(.bar)
-      .clipped()
-      .onGeometryChange(for: Double.self) { proxy in
-        Double(proxy.size.height)
-      } action: { newHeight in
-        sidebarHeight = newHeight
-      }
-      .onDragSessionUpdated { session in
-        if case .ended = session.phase {
-          endSidebarDrag()
-          return
-        }
-        if case .dataTransferCompleted = session.phase {
-          endSidebarDrag()
-        }
-      }
-      .safeAreaInset(edge: .top, spacing: 0) {
+      VStack(spacing: 0) {
         HStack(spacing: 4) {
           CanvasSidebarButton(
             store: store,
@@ -138,52 +91,86 @@ struct SidebarListView: View {
         }
         .padding(.top, 4)
         .padding(.horizontal, 4)
+        .frame(height: sidebarTopControlsHeight)
         .background(.bar)
         .overlay(alignment: .bottom) {
           Divider()
         }
-      }
-      .safeAreaInset(edge: .bottom, spacing: 0) {
-        SidebarFooterView(store: store)
-          .onGeometryChange(for: Double.self) { proxy in
-            Double(proxy.size.height)
-          } action: { newHeight in
-            sidebarFooterHeight = newHeight
-          }
-      }
-      .overlay(alignment: .bottom) {
-        ZStack(alignment: .bottom) {
-          ActiveAgentsPanel(
-            store: store.scope(state: \.activeAgents, action: \.activeAgents),
-            repositoryNamesByWorktreeID: agentWorktreeMetadata.repositoryNamesByWorktreeID,
-            branchNamesByWorktreeID: agentWorktreeMetadata.branchNamesByWorktreeID,
-            repositoryColorsByWorktreeID: agentWorktreeMetadata.repositoryColorsByWorktreeID,
-            selectedSurfaceID: selectedSurfaceID,
-            height: panelHeight,
-            maximumHeight: maximumPanelHeight,
-            onHeightChanged: { height in
-              resizingPanelHeight = height
-            },
-            onHeightChangeEnded: { height in
-              resizingPanelHeight = nil
-              store.send(.activeAgents(.panelHeightChanged(height)))
+
+        ScrollView {
+          LazyVStack(spacing: 0) {
+            if showsRepositoryListHeader {
+              repositoryListHeader(
+                action: repositoryListHeaderAction,
+                expandableRepositoryIDs: expandableRepositoryIDs
+              )
             }
-          )
-          .frame(height: panelHeight)
-          .offset(y: panelOffset)
+
+            if repositoryItems.isEmpty {
+              emptyRepositoryHint()
+            }
+
+            ForEach(Array(repositoryItems.enumerated()), id: \.element.id) { index, item in
+              repositoryItemView(
+                item,
+                index: index,
+                repositoryOrderIDs: presentation.repositoryOrderIDs,
+                hotkeyRows: hotkeyRows,
+                selectedWorktreeIDs: selectedWorktreeIDs
+              )
+            }
+          }
+          .padding(.bottom, 2)
         }
-        .frame(height: panelHeight)
+        .scrollIndicators(.never)
+        .frame(minWidth: 220, maxWidth: .infinity, maxHeight: .infinity)
+        .background(.bar)
         .clipped()
-        .padding(.bottom, sidebarFooterHeight)
+        .onDragSessionUpdated { session in
+          if case .ended = session.phase {
+            endSidebarDrag()
+            return
+          }
+          if case .dataTransferCompleted = session.phase {
+            endSidebarDrag()
+          }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+          let fileURLs = urls.filter(\.isFileURL)
+          guard !fileURLs.isEmpty else { return false }
+          store.send(.repositoryManagement(.openRepositories(fileURLs)))
+          return true
+        }
+
+        ActiveAgentsPanel(
+          store: store.scope(state: \.activeAgents, action: \.activeAgents),
+          repositoryNamesByWorktreeID: agentWorktreeMetadata.repositoryNamesByWorktreeID,
+          branchNamesByWorktreeID: agentWorktreeMetadata.branchNamesByWorktreeID,
+          repositoryColorsByWorktreeID: agentWorktreeMetadata.repositoryColorsByWorktreeID,
+          selectedSurfaceID: selectedSurfaceID,
+          height: panelHeight,
+          maximumHeight: maximumPanelHeight,
+          onHeightChanged: { height in
+            guard !state.activeAgents.isPanelHidden else { return }
+            resizingPanelHeight = height
+          },
+          onHeightChangeEnded: { height in
+            guard !state.activeAgents.isPanelHidden else { return }
+            resizingPanelHeight = nil
+            store.send(.activeAgents(.panelHeightChanged(height)))
+          }
+        )
+        .frame(height: state.activeAgents.isPanelHidden ? 0 : panelHeight + activeAgentsPanelTopGap)
+        .padding(.top, state.activeAgents.isPanelHidden ? 0 : activeAgentsPanelTopGap)
+        .opacity(state.activeAgents.isPanelHidden ? 0 : 1)
         .allowsHitTesting(!state.activeAgents.isPanelHidden)
-        .animation(.easeOut(duration: 0.18), value: state.activeAgents.isPanelHidden)
+        .clipped()
+
+        SidebarFooterView(store: store)
+          .frame(minHeight: sidebarFooterReservedHeight)
       }
-      .dropDestination(for: URL.self) { urls, _ in
-        let fileURLs = urls.filter(\.isFileURL)
-        guard !fileURLs.isEmpty else { return false }
-        store.send(.repositoryManagement(.openRepositories(fileURLs)))
-        return true
-      }
+      .frame(minWidth: 220)
+      .background(.bar)
       .onAppear {
         resetSidebarDrag()
       }
@@ -228,13 +215,11 @@ struct SidebarListView: View {
       .help("Add Repository")
       if !expandableRepositoryIDs.isEmpty {
         Button {
-          withAnimation(.easeOut(duration: 0.2)) {
-            switch action {
-            case .expandAll:
-              expandedRepoIDs.formUnion(expandableRepositoryIDs)
-            case .collapseAll:
-              expandedRepoIDs.subtract(expandableRepositoryIDs)
-            }
+          switch action {
+          case .expandAll:
+            expandedRepoIDs.formUnion(expandableRepositoryIDs)
+          case .collapseAll:
+            expandedRepoIDs.subtract(expandableRepositoryIDs)
           }
         } label: {
           Label(action.title, systemImage: action.systemImageName)
@@ -349,9 +334,7 @@ struct SidebarListView: View {
       actions: SidebarDropTargetActions(
         draggedItemID: draggingRepositoryID,
         onDrop: { offsets, destination in
-          withAnimation(.easeOut(duration: 0.2)) {
-            _ = store.send(.worktreeOrdering(.repositoriesMoved(offsets, destination)))
-          }
+          _ = store.send(.worktreeOrdering(.repositoriesMoved(offsets, destination)))
         },
         onDragEnded: endSidebarDrag
       )
@@ -381,12 +364,10 @@ struct SidebarListView: View {
 
   private func selectRepository(_ repository: Repository) {
     if repository.capabilities.supportsWorktrees {
-      withAnimation(.easeOut(duration: 0.2)) {
-        if expandedRepoIDs.contains(repository.id) {
-          expandedRepoIDs.remove(repository.id)
-        } else {
-          expandedRepoIDs.insert(repository.id)
-        }
+      if expandedRepoIDs.contains(repository.id) {
+        expandedRepoIDs.remove(repository.id)
+      } else {
+        expandedRepoIDs.insert(repository.id)
       }
       sidebarSelections = []
     } else {
@@ -405,9 +386,7 @@ struct SidebarListView: View {
     // Give SwiftUI time to materialize newly expanded section rows before scrolling.
     await Task.yield()
     await Task.yield()
-    withAnimation(.easeOut(duration: 0.2)) {
-      scrollProxy.scrollTo(SidebarScrollID.worktree(pendingSidebarReveal.worktreeID), anchor: .center)
-    }
+    scrollProxy.scrollTo(SidebarScrollID.worktree(pendingSidebarReveal.worktreeID), anchor: .center)
     store.send(.consumePendingSidebarReveal(pendingSidebarReveal.id))
   }
 

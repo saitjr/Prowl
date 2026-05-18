@@ -40,10 +40,42 @@ enum WindowFrameAutosaveSanitizer {
       userDefaults.removeObject(forKey: key)
       return
     }
+
+    if name == "main",
+      descriptor.windowFrame.width < HotkeyWindowSettings.defaultMinimumWidth
+        || descriptor.windowFrame.height < HotkeyWindowSettings.defaultMinimumHeight
+    {
+      userDefaults.removeObject(forKey: key)
+      return
+    }
   }
 
   @MainActor
   static func sanitizeAttachedWindow(_ window: NSWindow, screens: [NSScreen] = NSScreen.screens) {
+    if window.identifier?.rawValue == "main" {
+      let minimumWidth = HotkeyWindowSettings.defaultMinimumWidth
+      let minimumHeight = HotkeyWindowSettings.defaultMinimumHeight
+      if window.minSize.width < minimumWidth || window.minSize.height < minimumHeight {
+        window.minSize = CGSize(
+          width: max(window.minSize.width, minimumWidth),
+          height: max(window.minSize.height, minimumHeight)
+        )
+      }
+      if window.frame.width < minimumWidth || window.frame.height < minimumHeight {
+        let targetVisibleFrame = window.screen?.visibleFrame ?? screens.first?.visibleFrame ?? .null
+        if !targetVisibleFrame.isNull {
+          let width = min(max(minimumWidth, window.frame.width), targetVisibleFrame.width)
+          let height = min(max(minimumHeight, window.frame.height), targetVisibleFrame.height)
+          let correctedOrigin = CGPoint(
+            x: targetVisibleFrame.midX - (width / 2),
+            y: targetVisibleFrame.midY - (height / 2)
+          )
+          let correctedFrame = CGRect(origin: correctedOrigin, size: CGSize(width: width, height: height)).integral
+          window.setFrame(correctedFrame, display: false, animate: false)
+        }
+      }
+    }
+
     let screenFrames = screens.map(\.frame)
     let visibleFrames = screens.map(\.visibleFrame)
     guard
